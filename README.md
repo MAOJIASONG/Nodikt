@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/user-attachments/assets/a271e371-6d22-438b-b996-fcfd8a0c919f" alt="Nodikt Banner" width="100%"/>
+<img src="assets/logo.png" alt="Nodikt Banner" width="100%"/>
 
 # 🧠 Nodikt
 
