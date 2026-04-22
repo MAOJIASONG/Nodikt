@@ -1,0 +1,50 @@
+{
+  "version": "v1",
+  "updated_at": "1970-01-01T00:00:00.000Z",
+  "models": {
+    "primary": {
+      "provider": "openai-compatible",
+      "model": "",
+      "base_url": "",
+      "api_key": "",
+      "enabled": false
+    },
+    "planner": {
+      "provider": "openai-compatible",
+      "model": "",
+      "base_url": "",
+      "api_key": "",
+      "enabled": false
+    },
+    "verifier": {
+      "provider": "openai-compatible",
+      "model": "",
+      "base_url": "",
+      "api_key": "",
+      "enabled": false
+    },
+    "ops_backup": {
+      "provider": "openai-compatible",
+      "model": "",
+      "base_url": "",
+      "api_key": "",
+      "enabled": false
+    }
+  },
+  "workspace_root": "./workspace",
+  "runtime": {
+    "heartbeat_interval_seconds": 30,
+    "execution_timeout_seconds": 600,
+    "max_retry_count": 1
+  },
+  "worker_policy": {
+    "skill_install_scope": "workspace_only"
+  },
+  "default_autonomy_level": "L1",
+  "default_permissions": {
+    "can_modify_files": true,
+    "can_run_commands": true,
+    "can_install_dependencies": false,
+    "can_open_pr": false
+  }
+}

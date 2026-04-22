@@ -1,0 +1,941 @@
+<html lang="en" vid="0"><head vid="1">
+    <meta charset="UTF-8" vid="2">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" vid="3">
+    <title vid="4">Nodikt - Demand Orchestration</title>
+    <style vid="5">
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        :root {
+            
+            --bg-base: #030303;
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.55);
+            --text-tertiary: rgba(255, 255, 255, 0.3);
+            
+            
+            --surface-glass: rgba(20, 20, 22, 0.35);
+            --surface-glass-hover: rgba(30, 30, 35, 0.45);
+            --surface-glass-active: rgba(40, 40, 45, 0.5);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-glass-light: rgba(255, 255, 255, 0.15);
+            
+            
+            --status-green: #22c55e;
+            --status-orange: #f59e0b;
+            --status-red: #ef4444;
+            --status-gray: rgba(255, 255, 255, 0.2);
+
+            
+            --accent-blue: #3b82f6;
+            --accent-orange: #f97316;
+
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 16px;
+            
+            --blur-md: blur(24px);
+            --blur-lg: blur(40px);
+
+            --sidebar-width: 340px;
+            --nav-height: 56px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            font-size: 13px; 
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        
+        .noise-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.04;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        }
+
+        .aurora-bg {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            overflow: hidden;
+            z-index: -1;
+            background: #000;
+        }
+
+        .aurora-blob {
+            position: absolute;
+            filter: var(--blur-lg);
+            border-radius: 50%;
+            opacity: 0.6;
+            animation: drift 20s infinite alternate ease-in-out;
+            mix-blend-mode: screen;
+        }
+
+        .blob-1 { width: 60vw; height: 60vw; background: radial-gradient(circle, rgba(15,40,120,0.8) 0%, rgba(0,0,0,0) 70%); top: -20vh; left: -10vw; animation-delay: 0s; }
+        .blob-2 { width: 50vw; height: 50vw; background: radial-gradient(circle, rgba(120,30,10,0.7) 0%, rgba(0,0,0,0) 70%); bottom: -10vh; right: -10vw; animation-delay: -5s; }
+        .blob-3 { width: 40vw; height: 80vw; background: radial-gradient(circle, rgba(10,50,60,0.6) 0%, rgba(0,0,0,0) 70%); top: 10vh; right: 20vw; transform: rotate(45deg); animation-delay: -10s; }
+
+        @keyframes drift {
+            0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+            100% { transform: translate(5vw, -5vh) scale(1.1) rotate(10deg); }
+        }
+
+        
+        .splash-screen {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            animation: splashFade 2.5s cubic-bezier(0.8, 0, 0.2, 1) forwards;
+            pointer-events: none;
+        }
+
+        .splash-logo {
+            font-size: 48px;
+            font-weight: 700;
+            letter-spacing: -2px;
+            background: linear-gradient(90deg, #fff, rgba(255,255,255,0.2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            opacity: 0;
+            animation: logoReveal 2s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        }
+
+        @keyframes logoReveal {
+            0% { opacity: 0; filter: blur(10px); transform: scale(0.9); }
+            30% { opacity: 1; filter: blur(0px); transform: scale(1); }
+            80% { opacity: 1; filter: blur(0px); transform: scale(1); }
+            100% { opacity: 0; filter: blur(20px); transform: scale(1.1); }
+        }
+
+        @keyframes splashFade {
+            0%, 80% { opacity: 1; visibility: visible; }
+            100% { opacity: 0; visibility: hidden; }
+        }
+
+        
+        nav {
+            height: var(--nav-height);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            border-bottom: 1px solid var(--border-glass);
+            background: rgba(0, 0, 0, 0.2);
+            backdrop-filter: var(--blur-md);
+            -webkit-backdrop-filter: var(--blur-md);
+            z-index: 100;
+            gap: 32px;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-right: 24px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .logo-mark {
+            width: 20px; height: 20px;
+            background: linear-gradient(135deg, #fff, #888);
+            border-radius: 50%;
+            clip-path: polygon(0 0, 100% 0, 100% 50%, 40% 50%, 0 100%);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 24px;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            transition: color 0.2s;
+            position: relative;
+            padding: 18px 0;
+            cursor: pointer;
+        }
+
+        .nav-link:hover { color: var(--text-primary); }
+        .nav-link.active { color: var(--text-primary); }
+        .nav-link.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; width: 100%; height: 2px;
+            background: #fff;
+            border-radius: 2px 2px 0 0;
+        }
+
+        
+        main {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .view-section {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            padding: 24px;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .view-section.active {
+            display: flex;
+            opacity: 1;
+        }
+
+        
+        .glass-panel {
+            background: var(--surface-glass);
+            backdrop-filter: var(--blur-md);
+            -webkit-backdrop-filter: var(--blur-md);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-md);
+        }
+
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 8px currentColor;
+        }
+        .status-green { color: var(--status-green); background: var(--status-green); }
+        .status-orange { color: var(--status-orange); background: var(--status-orange); }
+        .status-red { color: var(--status-red); background: var(--status-red); }
+        .status-gray { color: var(--status-gray); background: var(--status-gray); box-shadow: none; }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-glass-light);
+            color: white;
+            padding: 6px 12px;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .btn:hover { background: rgba(255, 255, 255, 0.15); }
+        .btn-primary { background: white; color: black; border: none; font-weight: 500; }
+        .btn-primary:hover { background: #e5e5e5; }
+        .btn-icon { padding: 4px; border: none; background: transparent; color: var(--text-secondary); }
+        .btn-icon:hover { color: white; background: rgba(255,255,255,0.1); }
+
+        
+        #view-dashboard {
+            flex-direction: row;
+            gap: 24px;
+            transition: padding 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+            align-items: stretch;
+        }
+
+        .demand-container {
+            display: flex;
+            flex-direction: column;
+            transition: all 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+            height: 100%;
+        }
+
+        
+        #view-dashboard.state-board .demand-container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            justify-content: center;
+        }
+        
+        #view-dashboard.state-board .demand-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+            align-content: center;
+            flex: 1;
+            padding-bottom: 60px; 
+        }
+
+        
+        #view-dashboard.state-detail .demand-container {
+            width: var(--sidebar-width);
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-glass);
+            padding-right: 24px;
+        }
+
+        #view-dashboard.state-detail .demand-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            overflow-y: auto;
+            flex: 1;
+            padding-bottom: 24px;
+        }
+        
+        
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border-glass-light); border-radius: 4px; }
+
+        
+        .demand-card {
+            padding: 16px;
+            cursor: pointer;
+            position: relative;
+            transition: background 0.2s, border-color 0.2s;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .demand-card:hover {
+            background: var(--surface-glass-hover);
+            border-color: var(--border-glass-light);
+        }
+
+        .demand-card.selected {
+            background: var(--surface-glass-active);
+            border-color: rgba(255,255,255,0.3);
+        }
+
+        .card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .card-title-group { display: flex; align-items: center; gap: 8px; flex: 1; }
+        .card-title { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .card-delete {
+            opacity: 0; transition: opacity 0.2s;
+            font-size: 16px; line-height: 1; padding: 0 4px;
+            color: var(--text-tertiary); background: none; border: none; cursor: pointer;
+        }
+        .demand-card:hover .card-delete { opacity: 1; }
+        .card-delete:hover { color: var(--status-red); }
+
+        .card-subgoal { font-size: 12px; color: var(--text-secondary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        
+        .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
+        .worker-count { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-tertiary); }
+        .worker-avatars { display: flex; }
+        .worker-avatar { width: 16px; height: 16px; border-radius: 50%; background: #333; border: 1px solid #111; margin-left: -4px; }
+
+        
+        .card-progress-rings { display: none; gap: 4px; }
+        .ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-glass); }
+        .ring.active { border-color: var(--accent-blue); }
+        .ring.done { border-color: var(--status-green); background: var(--status-green); opacity: 0.5;}
+        
+        #view-dashboard.state-detail .demand-card .card-subgoal,
+        #view-dashboard.state-detail .demand-card .worker-avatars { display: none; }
+        #view-dashboard.state-detail .demand-card .card-progress-rings { display: flex; }
+        #view-dashboard.state-detail .demand-card { padding: 12px; gap: 8px; }
+
+        
+        .sidebar-actions {
+            margin-top: auto;
+            padding-top: 16px;
+        }
+        .btn-full { width: 100%; justify-content: center; padding: 10px; border-style: dashed; }
+
+        
+        .detail-container {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            gap: 20px;
+            animation: fadeInRight 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+        }
+
+        #view-dashboard.state-detail .detail-container { display: flex; }
+
+        @keyframes fadeInRight {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .detail-header {
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        
+        .dh-top { display: flex; align-items: center; gap: 12px; }
+        .dh-title { font-size: 20px; font-weight: 600; letter-spacing: -0.5px; }
+        .tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-glass); color: var(--text-secondary); }
+        .tag.running { color: var(--accent-blue); border-color: rgba(59, 130, 246, 0.3); }
+        
+        .dh-summary { font-size: 13px; color: var(--text-secondary); max-width: 80%; }
+
+        .detail-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow: hidden;
+        }
+        .panel-header { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); font-weight: 600; }
+        .panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 8px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+
+        
+        .plan-item {
+            padding: 12px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-sm);
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .pi-header { display: flex; justify-content: space-between; align-items: center; }
+        .pi-title { font-size: 13px; font-weight: 500; }
+        .worker-badge { font-size: 10px; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px; }
+        .worker-badge::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--status-green); }
+
+        
+        .chat-msg {
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            max-width: 90%;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .chat-system { background: rgba(255,255,255,0.05); color: var(--text-secondary); align-self: center; font-size: 11px; text-align: center; }
+        .chat-worker { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); align-self: flex-start; border-top-left-radius: 2px;}
+        .chat-user { background: rgba(255, 255, 255, 0.1); align-self: flex-end; border-top-right-radius: 2px;}
+        .msg-author { font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px; display: block; }
+
+        
+        .decision-bubble {
+            position: absolute;
+            bottom: 24px; right: 24px;
+            background: var(--surface-glass);
+            backdrop-filter: var(--blur-lg);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            padding: 12px 16px;
+            border-radius: 30px;
+            display: flex; align-items: center; gap: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset;
+            transition: transform 0.2s, background 0.2s;
+            z-index: 10;
+        }
+        .decision-bubble:hover { transform: translateY(-2px); background: rgba(40,30,20,0.6); }
+        .decision-bubble .status-dot { background: var(--status-orange); box-shadow: 0 0 8px var(--status-orange); }
+        .decision-text { font-size: 12px; font-weight: 500; }
+
+        
+        #view-workers {
+            flex-direction: column;
+            gap: 24px;
+            overflow-y: auto;
+        }
+
+        .workers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .worker-tile {
+            padding: 16px;
+            display: flex; flex-direction: column; gap: 12px;
+            aspect-ratio: 1;
+            justify-content: center;
+        }
+        .wt-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .wt-name { font-weight: 500; font-size: 14px; }
+        .wt-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+        .wt-tag { font-size: 9px; padding: 2px 4px; background: rgba(255,255,255,0.05); border-radius: 4px; color: var(--text-tertiary); text-transform: uppercase; }
+
+        .runtime-panel {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-glass);
+            display: flex; flex-direction: column; gap: 16px;
+        }
+        .terminal-block {
+            background: #000; border: 1px solid var(--border-glass); border-radius: var(--radius-sm);
+            padding: 12px; font-family: monospace; font-size: 11px; color: var(--text-secondary);
+            height: 200px; overflow-y: auto; white-space: pre-wrap;
+        }
+        .log-entry { margin-bottom: 4px; }
+        .log-time { color: var(--text-tertiary); margin-right: 8px; }
+        .log-info { color: #88c0d0; }
+        .log-warn { color: #ebcb8b; }
+
+        
+        #view-settings {
+            flex-direction: column;
+            align-items: center;
+            overflow-y: auto;
+        }
+        .settings-container {
+            width: 100%; max-width: 600px;
+            display: flex; flex-direction: column; gap: 32px;
+            padding-bottom: 40px;
+        }
+        .settings-group { display: flex; flex-direction: column; gap: 16px; }
+        .sg-title { font-size: 14px; font-weight: 600; border-bottom: 1px solid var(--border-glass); padding-bottom: 8px; }
+        
+        .form-row { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: center; }
+        label { font-size: 12px; color: var(--text-secondary); }
+        
+        select, input[type="text"] {
+            width: 100%;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--border-glass);
+            color: white; padding: 8px 12px; border-radius: var(--radius-sm);
+            font-family: inherit; font-size: 13px;
+            outline: none; transition: border-color 0.2s;
+        }
+        select:focus, input[type="text"]:focus { border-color: rgba(255,255,255,0.3); }
+        
+        .settings-actions {
+            display: flex; justify-content: flex-end; gap: 12px;
+            padding-top: 16px; border-top: 1px solid var(--border-glass);
+        }
+        .btn-save { opacity: 0.5; pointer-events: none; }
+        .is-dirty .btn-save { opacity: 1; pointer-events: auto; background: var(--accent-blue); color: white; border: none; }
+
+        
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+            display: none; justify-content: center; align-items: center; z-index: 1000;
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .modal-overlay.active { display: flex; opacity: 1; }
+        
+        .modal {
+            width: 400px; max-width: 90vw;
+            padding: 24px; display: flex; flex-direction: column; gap: 20px;
+            transform: scale(0.95); transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .modal-overlay.active .modal { transform: scale(1); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; font-size: 16px; font-weight: 600; }
+        
+        textarea {
+            width: 100%; height: 100px; resize: none;
+            background: rgba(0,0,0,0.3); border: 1px solid var(--border-glass);
+            color: white; padding: 12px; border-radius: var(--radius-sm);
+            font-family: inherit; font-size: 13px; outline: none;
+        }
+
+    </style>
+</head>
+<body vid="6">
+
+    
+    <div class="noise-overlay" vid="7"></div>
+    <div class="aurora-bg" vid="8">
+        <div class="aurora-blob blob-1" vid="9"></div>
+        <div class="aurora-blob blob-2" vid="10"></div>
+        <div class="aurora-blob blob-3" vid="11"></div>
+    </div>
+
+    
+    <div class="splash-screen" id="splash" vid="12">
+        <div class="splash-logo" vid="13">nodikt.</div>
+    </div>
+
+    
+    <nav vid="14">
+        <div class="logo" vid="15">
+            <div class="logo-mark" vid="16"></div>
+            Nodikt
+        </div>
+        <div class="nav-links" vid="17">
+            <a class="nav-link active" data-target="view-dashboard" vid="18">Dashboard</a>
+            <a class="nav-link" data-target="view-workers" vid="19">Workers</a>
+            <a class="nav-link" data-target="view-settings" vid="20">Settings</a>
+        </div>
+    </nav>
+
+    
+    <main vid="21">
+        
+        
+        <section id="view-dashboard" class="view-section active state-board" vid="22">
+            
+            
+            <div class="demand-container" vid="23">
+                <div class="demand-grid" id="demand-list" vid="24">
+                    
+                </div>
+                <div class="sidebar-actions" style="display: none;" id="sidebar-actions" vid="25">
+                    <button class="btn btn-full" onclick="openModal('create-demand-modal')" vid="26">+ New Demand</button>
+                </div>
+            </div>
+
+            
+            <div class="detail-container glass-panel" id="detail-area" vid="27">
+                
+                <div class="detail-header" vid="28">
+                    <div class="dh-top" vid="29">
+                        <div class="status-dot status-green" vid="30"></div>
+                        <div class="dh-title" id="detail-title" vid="31">Deploy Next.js App to Vercel</div>
+                        <div class="tag running" vid="32">Phase: Execution</div>
+                        <div class="tag" vid="33">Running</div>
+                    </div>
+                    <div class="dh-summary" vid="34">Ensure all environment variables are synced and edge functions are configured for the eu-central-1 region.</div>
+                </div>
+
+                <div class="detail-content" vid="35">
+                    
+                    <div class="panel" vid="36">
+                        <div class="panel-header" vid="37">Execution Plan</div>
+                        <div class="panel-body" vid="38">
+                            <div class="plan-item" vid="39">
+                                <div class="pi-header" vid="40">
+                                    <span class="pi-title" style="text-decoration: line-through; opacity: 0.5;" vid="41">Analyze Repository</span>
+                                    <span class="worker-badge" vid="42">Codex</span>
+                                </div>
+                            </div>
+                            <div class="plan-item" style="border-color: rgba(255,255,255,0.2);" vid="43">
+                                <div class="pi-header" vid="44">
+                                    <span class="pi-title" vid="45">Configure Environment Variables</span>
+                                    <span class="worker-badge" vid="46">Claude Code</span>
+                                </div>
+                                <div class="card-subgoal" vid="47">Extracting required vars from .env.example and matching with AWS Secrets Manager.</div>
+                            </div>
+                            <div class="plan-item" vid="48">
+                                <div class="pi-header" vid="49">
+                                    <span class="pi-title" style="opacity: 0.5;" vid="50">Initiate Vercel Deployment</span>
+                                    <span class="worker-badge" style="opacity: 0.5;" vid="51">OpenClaw</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    
+                    <div class="panel" vid="52">
+                        <div class="panel-header" vid="53">Clarification History</div>
+                        <div class="panel-body" style="background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); padding: 12px; border: 1px solid var(--border-glass-light);" vid="54">
+                            <div class="chat-system" vid="55">Demand Initialized - Plan Generated</div>
+                            
+                            <div class="chat-msg chat-worker" vid="56">
+                                <span class="msg-author" vid="57">Claude Code</span>
+                                I cannot find the AWS credentials in the local workspace root. Should I request them from the user or check the fallback vault?
+                            </div>
+                            
+                            <div class="chat-msg chat-user" vid="58">
+                                <span class="msg-author" vid="59">User</span>
+                                Check the fallback vault, the path is /mnt/secrets/aws.json
+                            </div>
+
+                            <div class="chat-msg chat-worker" vid="60">
+                                <span class="msg-author" vid="61">Claude Code</span>
+                                Acknowledged. Proceeding with vault extraction.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                
+                <div class="decision-bubble" onclick="openModal('decision-modal')" vid="62">
+                    <div class="status-dot" vid="63"></div>
+                    <div class="decision-text" vid="64">1 Pending Decision</div>
+                </div>
+
+            </div>
+        </section>
+
+        
+        <section id="view-workers" class="view-section" vid="65">
+            <div style="max-width: 1000px; margin: 0 auto; width: 100%;" vid="66">
+                <h2 style="font-size: 16px; font-weight: 500; margin-bottom: 16px;" vid="67">Active Fleet</h2>
+                <div class="workers-grid" vid="68">
+                    
+                    <div class="worker-tile glass-panel" vid="69">
+                        <div class="wt-header" vid="70">
+                            <div class="wt-name" vid="71">Codex</div>
+                            <div class="status-dot status-green" vid="72"></div>
+                        </div>
+                        <div class="wt-tags" vid="73">
+                            <span class="wt-tag" vid="74">planner</span><span class="wt-tag" vid="75">code-gen</span>
+                        </div>
+                    </div>
+                    
+                    <div class="worker-tile glass-panel" vid="76">
+                        <div class="wt-header" vid="77">
+                            <div class="wt-name" vid="78">Claude Code</div>
+                            <div class="status-dot status-green" vid="79"></div>
+                        </div>
+                        <div class="wt-tags" vid="80">
+                            <span class="wt-tag" vid="81">verifier</span><span class="wt-tag" vid="82">context-heavy</span>
+                        </div>
+                    </div>
+
+                    <div class="worker-tile glass-panel" vid="83">
+                        <div class="wt-header" vid="84">
+                            <div class="wt-name" vid="85">OpenClaw</div>
+                            <div class="status-dot status-gray" vid="86"></div>
+                        </div>
+                        <div style="font-size: 11px; color: var(--text-tertiary);" vid="87">Offline / Unconfigured</div>
+                        <div class="wt-tags" vid="88">
+                            <span class="wt-tag" vid="89">ops</span><span class="wt-tag" vid="90">cli</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="runtime-panel" vid="91">
+                    <div style="display: flex; justify-content: space-between; align-items: center;" vid="92">
+                        <h3 style="font-size: 14px; font-weight: 500;" vid="93">Demand Runtime &amp; Trace</h3>
+                        <span class="tag" vid="94">Context: Deploy Next.js App</span>
+                    </div>
+                    <div class="terminal-block" vid="95">
+<div class="log-entry" vid="96"><span class="log-time" vid="97">14:22:01.043</span><span class="log-info" vid="98">[System]</span> Orchestrator dispatched plan to fleet.</div>
+<div class="log-entry" vid="99"><span class="log-time" vid="100">14:22:02.110</span><span class="log-info" vid="101">[Codex]</span> Repository analysis complete. 42 files indexed.</div>
+<div class="log-entry" vid="102"><span class="log-time" vid="103">14:22:05.882</span><span class="log-info" vid="104">[Claude Code]</span> Starting env configuration.</div>
+<div class="log-entry" vid="105"><span class="log-time" vid="106">14:22:06.012</span><span class="log-warn" vid="107">[Claude Code]</span> WARN: Missing credentials. Raising clarification request.</div>
+<div class="log-entry" vid="108"><span class="log-time" vid="109">14:22:45.330</span><span class="log-info" vid="110">[System]</span> User provided clarification. Resuming execution.</div>
+<div class="log-entry" vid="111"><span class="log-time" vid="112">14:22:46.100</span><span class="log-info" vid="113">[Claude Code]</span> Extracted secrets from /mnt/secrets/aws.json successfully.</div>
+<div class="log-entry" vid="114"><span class="log-time" vid="115">14:22:46.105</span><span class="log-info" vid="116">[Claude Code]</span> Pushing variables to Vercel API...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        
+        <section id="view-settings" class="view-section" vid="117">
+            <div class="settings-container" id="settings-form" vid="118">
+                
+                <div class="settings-group" vid="119">
+                    <div class="sg-title" vid="120">LLM Configuration</div>
+                    <div class="form-row" vid="121">
+                        <label vid="122">Primary Planner</label>
+                        <select onchange="markDirty()" vid="123"><option vid="124">GPT-4 Turbo</option><option vid="125">Claude 3 Opus</option></select>
+                    </div>
+                    <div class="form-row" vid="126">
+                        <label vid="127">Verifier Engine</label>
+                        <select onchange="markDirty()" vid="128"><option selected="" vid="129">Claude 3 Sonnet</option><option vid="130">GPT-4o</option></select>
+                    </div>
+                    <div class="form-row" vid="131">
+                        <label vid="132">Ops / Backup</label>
+                        <select onchange="markDirty()" vid="133"><option vid="134">Llama 3 70B (Local)</option><option selected="" vid="135">Mistral Large</option></select>
+                    </div>
+                </div>
+
+                <div class="settings-group" vid="136">
+                    <div class="sg-title" vid="137">Workspace Parameters</div>
+                    <div class="form-row" vid="138">
+                        <label vid="139">Workspace Root</label>
+                        <input type="text" value="/var/nodikt/workspaces/default" oninput="markDirty()" vid="140">
+                    </div>
+                    <div class="form-row" vid="141">
+                        <label vid="142">Max Runtime (min)</label>
+                        <input type="text" value="120" oninput="markDirty()" vid="143">
+                    </div>
+                </div>
+
+                <div class="settings-actions" vid="144">
+                    <button class="btn" onclick="resetSettings()" vid="145">Discard</button>
+                    <button class="btn btn-save" onclick="saveSettings()" vid="146">Save Changes</button>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    
+    <div class="modal-overlay" id="create-demand-modal" vid="147">
+        <div class="modal glass-panel" vid="148">
+            <div class="modal-header" vid="149">
+                Create New Demand
+                <button class="btn-icon" onclick="closeModal('create-demand-modal')" vid="150">×</button>
+            </div>
+            <input type="text" placeholder="Short Title (e.g., Migrate DB to Postgres)" vid="151">
+            <textarea placeholder="Describe the goal, constraints, and any specific instructions..." vid="152"></textarea>
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;" vid="153">
+                <button class="btn" onclick="closeModal('create-demand-modal')" vid="154">Cancel</button>
+                <button class="btn btn-primary" onclick="submitNewDemand()" vid="155">Initialize</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="decision-modal" vid="156">
+        <div class="modal glass-panel" style="border-color: rgba(245, 158, 11, 0.4);" vid="157">
+            <div class="modal-header" vid="158">
+                <div style="display: flex; align-items: center; gap: 8px;" vid="159">
+                    <div class="status-dot status-orange" vid="160"></div>
+                    Pending Alignment
+                </div>
+                <button class="btn-icon" onclick="closeModal('decision-modal')" vid="161">×</button>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;" vid="162">
+                <strong vid="163">Claude Code</strong> has detected a potential destructive action. The script attempts to drop the table <code vid="164">users_backup</code> before recreating it. Please confirm if this is intended.
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;" vid="165">
+                <button class="btn" onclick="closeModal('decision-modal')" vid="166">Deny &amp; Halt</button>
+                <button class="btn btn-primary" onclick="closeModal('decision-modal')" style="background: var(--status-orange); color: white;" vid="167">Approve Action</button>
+            </div>
+        </div>
+    </div>
+
+    <script vid="168">
+        
+        const demands = [
+            { id: 1, title: 'Deploy Next.js App to Vercel', status: 'green', subgoal: 'Configure Environment Variables', workers: 2 },
+            { id: 2, title: 'Refactor Authentication Module', status: 'orange', subgoal: 'Awaiting alignment on JWT expiration policy', workers: 1 },
+            { id: 3, title: 'Scrape Competitor Pricing', status: 'green', subgoal: 'Parsing HTML tables from source B', workers: 3 },
+            { id: 4, title: 'Update Dependencies', status: 'red', subgoal: 'Failed: Conflict in peer dependencies for React 18', workers: 0 }
+        ];
+
+        
+        function renderDemands() {
+            const list = document.getElementById('demand-list');
+            list.innerHTML = demands.map(d => `
+                <div class="demand-card glass-panel" onclick="openDetailView(${d.id})">
+                    <div class="card-header">
+                        <div class="card-title-group">
+                            <div class="status-dot status-${d.status}"></div>
+                            <div class="card-title">${d.title}</div>
+                        </div>
+                        <button class="card-delete" onclick="deleteDemand(event, ${d.id})">×</button>
+                    </div>
+                    <div class="card-subgoal">${d.subgoal}</div>
+                    
+                    <!-- Sidebar mode progress rings -->
+                    <div class="card-progress-rings">
+                        <div class="ring done"></div>
+                        <div class="ring active"></div>
+                        <div class="ring"></div>
+                        <div class="ring"></div>
+                    </div>
+
+                    <div class="card-footer">
+                        <div class="worker-count">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                            ${d.workers} Active
+                        </div>
+                        <div class="worker-avatars">
+                            ${Array(d.workers).fill('<div class="worker-avatar"></div>').join('')}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        
+        function openDetailView(id) {
+            const dash = document.getElementById('view-dashboard');
+            dash.classList.remove('state-board');
+            dash.classList.add('state-detail');
+            document.getElementById('sidebar-actions').style.display = 'block';
+            
+            
+            document.querySelectorAll('.demand-card').forEach(c => c.classList.remove('selected'));
+            event.currentTarget.classList.add('selected');
+
+            
+            document.getElementById('detail-title').innerText = demands.find(d=>d.id===id)?.title || "Demand Details";
+        }
+
+        function resetToBoardView() {
+            const dash = document.getElementById('view-dashboard');
+            dash.classList.remove('state-detail');
+            dash.classList.add('state-board');
+            document.getElementById('sidebar-actions').style.display = 'none';
+            document.querySelectorAll('.demand-card').forEach(c => c.classList.remove('selected'));
+        }
+
+        function deleteDemand(e, id) {
+            e.stopPropagation(); 
+            alert(`Demand ${id} deleted.`);
+            
+        }
+
+        
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                
+                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                e.target.classList.add('active');
+
+                
+                const targetId = e.target.getAttribute('data-target');
+                document.querySelectorAll('.view-section').forEach(v => v.classList.remove('active'));
+                document.getElementById(targetId).classList.add('active');
+
+                
+                if(targetId === 'view-dashboard') {
+                    resetToBoardView();
+                }
+            });
+        });
+
+        
+        function openModal(id) {
+            document.getElementById(id).classList.add('active');
+        }
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
+
+        function submitNewDemand() {
+            closeModal('create-demand-modal');
+            
+            document.querySelector('.nav-link[data-target="view-dashboard"]').click();
+            setTimeout(() => {
+                openDetailView(1); 
+            }, 300);
+        }
+
+        
+        function markDirty() {
+            document.getElementById('settings-form').classList.add('is-dirty');
+        }
+        function saveSettings() {
+            document.getElementById('settings-form').classList.remove('is-dirty');
+            
+        }
+        function resetSettings() {
+            document.getElementById('settings-form').classList.remove('is-dirty');
+            
+        }
+
+        
+        window.onload = () => {
+            renderDemands();
+            
+            setTimeout(() => {
+                const splash = document.getElementById('splash');
+                if(splash) splash.remove();
+            }, 2600);
+        };
+    </script>
+
+</body></html>
