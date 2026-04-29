@@ -23,6 +23,7 @@ interface RuntimeRecord {
   stderr: string[];
   exitCode: number | null;
   finishedAt: number | null;
+  errorMessage: string | null;
 }
 
 export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
@@ -112,7 +113,8 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
       stdout: [],
       stderr: [],
       exitCode: null,
-      finishedAt: null
+      finishedAt: null,
+      errorMessage: null
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
@@ -120,6 +122,11 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
     });
     child.stderr.on("data", (chunk: Buffer) => {
       record.stderr.push(chunk.toString("utf8"));
+    });
+    child.on("error", (error) => {
+      record.errorMessage = error.message;
+      record.stderr.push(error.message);
+      record.finishedAt = Date.now();
     });
     child.on("close", (exitCode) => {
       record.exitCode = exitCode;
@@ -192,7 +199,9 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
         ? null
         : {
             code: "PROCESS_EXIT",
-            message: runtime.stderr.join("").slice(-1000) || `Process exited with code ${runtime.exitCode}`
+            message: runtime.errorMessage
+              || runtime.stderr.join("").slice(-1000)
+              || `Process exited with code ${runtime.exitCode}`
           },
       suggested_next_step: runtime.exitCode === 0 ? "Verify produced artifacts" : "Inspect stderr and retry or request human decision",
       budget_used: {
