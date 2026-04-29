@@ -5,6 +5,8 @@
     "moduleResolution": "Node",
     "rootDir": "src",
     "outDir": "dist",
+    "sourceMap": true,
+    "inlineSources": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
