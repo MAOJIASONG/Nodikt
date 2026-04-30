@@ -7,7 +7,10 @@ import {
   SubgoalState,
   nowIso
 } from "../domain/index.js";
+import { createLogger } from "../logger.js";
 import { RuntimeSessionPatch, patchRuntimeSession } from "./sessionState.js";
+
+const logger = createLogger("handlers:state_machine");
 
 export const ACTIVE_EXECUTION_STATES = new Set([
   ExecutionState.QUEUED,
@@ -152,6 +155,7 @@ export function assertTransition<TState extends string>(
   transitions: Record<TState, TState[]>
 ): void {
   if (!transitions[current]?.includes(next)) {
+    logger.error({ label, current, next }, "检测到非法状态流转");
     throw new Error(`Illegal ${label} transition: ${current} -> ${next}`);
   }
 }

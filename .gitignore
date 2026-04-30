@@ -240,6 +240,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
 >>>>>>> 0ea809c0ce16baba5a1af4d939d80560b117b055
 
 # ===== merged from remote (Python) =====
@@ -450,3 +451,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Keep server runtime logs in git for this project.
+!server/logs/
+!server/logs/**

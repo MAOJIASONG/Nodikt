@@ -11,6 +11,7 @@ import {
   nowIso
 } from "../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
+import { createLogger } from "../../logger.js";
 import {
   ACTIVE_EXECUTION_STATES,
   transitionDemand,
@@ -22,15 +23,19 @@ import {
   syncWorkerExecutionSlots
 } from "../executionRuntime.js";
 
+const logger = createLogger("handlers:execution");
+
 export async function onExecutionCreated(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const payload = event.payload as { execution: any; dispatch_packet: any };
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
   const worker = await ctx.repositories.workers.getById(event.worker_id ?? "");
   if (!demand || !subgoal || !worker) {
+    logger.warn({ demandId: event.demand_id, subgoalId: event.subgoal_id, workerId: event.worker_id, executionId: event.execution_id }, "忽略执行创建事件，因为必要记录未找到");
     return {};
   }
 
+  logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: payload.execution.execution_id, workerId: worker.worker_id }, "正在保存已创建的执行");
   await ctx.repositories.executions.upsert(payload.execution);
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
     state: DemandState.ACTIVE,
@@ -76,11 +81,13 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
   const settings = await ctx.repositories.loadSettings();
   if (!execution || !worker || !demand || !subgoal || !demand.operational_objective) {
+    logger.warn({ demandId: event.demand_id, subgoalId: event.subgoal_id, executionId: event.execution_id, workerId: event.worker_id }, "忽略执行派发事件，因为必要记录未找到");
     return {};
   }
 
   const adapter = ctx.adapterRegistry.getAdapter(worker.worker_id);
   if (!adapter) {
+    logger.error({ workerId: worker.worker_id, executionId: execution.execution_id }, "无法派发执行，因为工作器适配器未注册");
     return {};
   }
 
@@ -103,9 +110,11 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
 
   try {
     ctx.adapterRegistry.bindExecution(execution.execution_id, worker.worker_id);
+    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, workerId: worker.worker_id }, "正在启动工作器执行");
     await adapter.startExecution(packet);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logger.error({ err: error, executionId: execution.execution_id, workerId: worker.worker_id }, "工作器执行启动失败");
     await ctx.repositories.executions.upsert(runningExecution);
     await ctx.repositories.subgoals.upsert(executingSubgoal);
     return {
@@ -135,16 +144,19 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
 
   await ctx.repositories.executions.upsert(runningExecution);
   await ctx.repositories.subgoals.upsert(executingSubgoal);
+  logger.info({ executionId: execution.execution_id, workerId: worker.worker_id }, "工作器执行已启动");
   return {};
 }
 
 export async function onWorkerHeartbeat(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const execution = await ctx.repositories.executions.getById(event.execution_id ?? "");
   if (!execution) {
+    logger.warn({ executionId: event.execution_id }, "忽略心跳事件，因为未找到对应执行");
     return {};
   }
 
   const payload = event.payload as { heartbeat: { emitted_at: string; status: any } };
+  logger.debug({ executionId: execution.execution_id, status: payload.heartbeat.status }, "收到工作器心跳");
   await ctx.repositories.executions.upsert(transitionExecution(execution, {
     last_heartbeat_at: payload.heartbeat.emitted_at,
     latest_worker_status: payload.heartbeat.status
@@ -156,12 +168,15 @@ export async function onWorkerResult(event: SchedulerEvent, ctx: HandlerContext)
   const execution = await ctx.repositories.executions.getById(event.execution_id ?? "");
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
   if (!execution || !subgoal) {
+    logger.warn({ executionId: event.execution_id, subgoalId: event.subgoal_id }, "忽略工作器结果，因为未找到执行或子目标");
     return {};
   }
   if (!ACTIVE_EXECUTION_STATES.has(execution.state)) {
+    logger.debug({ executionId: execution.execution_id, state: execution.state }, "忽略非活跃执行的工作器结果");
     return {};
   }
   const payload = event.payload as { worker_result: any };
+  logger.info({ executionId: execution.execution_id, subgoalId: subgoal.subgoal_id, workerStatus: payload.worker_result.worker_status }, "收到工作器结果，开始验证");
   const resultExecution = execution.state === ExecutionState.QUEUED
     ? transitionExecution(execution, {
         state: ExecutionState.RUNNING,
@@ -202,6 +217,7 @@ export async function onWorkerResult(event: SchedulerEvent, ctx: HandlerContext)
 export async function onExecutionStopRequested(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const execution = await ctx.repositories.executions.getById(event.execution_id ?? "");
   if (!execution || !ACTIVE_EXECUTION_STATES.has(execution.state)) {
+    logger.debug({ executionId: event.execution_id, state: execution?.state }, "忽略停止请求，因为执行不是活跃状态");
     return {};
   }
 
@@ -211,10 +227,14 @@ export async function onExecutionStopRequested(event: SchedulerEvent, ctx: Handl
   let stopError: string | null = null;
   if (adapter) {
     try {
+      logger.info({ executionId: execution.execution_id, workerId: execution.worker_id, reason: payload.reason }, "正在停止工作器执行");
       await adapter.stopExecution(execution.execution_id);
     } catch (error) {
       stopError = error instanceof Error ? error.message : String(error);
+      logger.error({ err: error, executionId: execution.execution_id }, "工作器执行停止失败");
     }
+  } else {
+    logger.warn({ executionId: execution.execution_id, workerId: execution.worker_id }, "停止执行时未找到执行适配器");
   }
 
   await ctx.repositories.executions.upsert(transitionExecution(execution, {
@@ -230,5 +250,6 @@ export async function onExecutionStopRequested(event: SchedulerEvent, ctx: Handl
   }
 
   await syncWorkerExecutionSlots(execution.worker_id, ctx, stopError);
+  logger.info({ executionId: execution.execution_id, workerId: execution.worker_id, state: shouldCancel ? ExecutionState.CANCELLED : ExecutionState.INTERRUPTED }, "执行已停止");
   return {};
 }
