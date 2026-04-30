@@ -10,6 +10,7 @@ import {
   nowIso
 } from "../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
+import { createLogger } from "../../logger.js";
 import {
   DEMAND_TRANSITIONS,
   EXECUTION_TRANSITIONS,
@@ -30,6 +31,8 @@ import {
 } from "../executionRuntime.js";
 import { collectEventRefs } from "./shared.js";
 
+const logger = createLogger("handlers:review");
+
 export async function onVerificationCompleted(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
@@ -39,10 +42,12 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     .filter((item) => item.execution_id === event.execution_id && item.event_type === EventType.WORKER_RESULT_RECEIVED)
     .slice(-1)[0];
   if (!demand || !subgoal || !execution || !workerResultEvent) {
+    logger.warn({ demandId: event.demand_id, subgoalId: event.subgoal_id, executionId: event.execution_id }, "忽略验证完成事件，因为必要记录未找到");
     return {};
   }
   const workerResult = (workerResultEvent.payload as { worker_result: any }).worker_result;
   const verification = (event.payload as { verification_result: any }).verification_result;
+  logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, verificationStatus: verification.verified_status }, "正在归并验证结果");
   const outcome = ctx.reconciliation.reconcile({ demand, subgoal, execution, workerResult, verification });
   const projectedSubgoals = demandSubgoals.map((item) => item.subgoal_id === outcome.subgoal.subgoal_id ? outcome.subgoal : item);
 
@@ -88,6 +93,7 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   }
 
   if (outcome.decisionReasonCode) {
+    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, reasonCode: outcome.decisionReasonCode }, "验证结果需要用户决策");
     outcome.demand.state = DemandState.PENDING_DECISION;
     outcome.demand.current_phase = DemandPhase.REVIEW;
     outcome.missionCompleted = false;
@@ -128,6 +134,16 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   })) {
     await ctx.repositories.memory.upsert(memory);
   }
+  logger.info({
+    demandId: demand.demand_id,
+    subgoalId: subgoal.subgoal_id,
+    executionId: execution.execution_id,
+    demandState: outcome.demand.state,
+    subgoalState: outcome.subgoal.state,
+    executionState: outcome.execution.state,
+    replanRequested: outcome.replanRequested,
+    missionCompleted: outcome.missionCompleted
+  }, "验证归并结果已保存");
 
   const events: SchedulerEvent<unknown>[] = [
     createEvent(
@@ -149,6 +165,9 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
 
   if (verification.verified_status === "VERIFIED_DONE") {
     const unlockedSubgoalIds = collectUnlockedPlannedSubgoals(outcome.demand, projectedSubgoals);
+    if (unlockedSubgoalIds.length > 0) {
+      logger.info({ demandId: demand.demand_id, unlockedSubgoalIds }, "验证后已解锁计划中的子目标");
+    }
     for (const unlockedSubgoalId of unlockedSubgoalIds) {
       events.push(
         createEvent(
@@ -185,6 +204,7 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
       subgoalId: subgoal.subgoal_id,
       executionId: execution.execution_id
     });
+    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, decisionId: decision.decision_id }, "已根据验证结果创建决策请求");
     events.push(
       createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
         demand_id: demand.demand_id,
@@ -194,10 +214,12 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
       })
     );
   } else if (outcome.replanRequested) {
+    logger.info({ demandId: demand.demand_id }, "验证后准备请求重新规划");
     events.push(
       createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" }, { demand_id: demand.demand_id })
     );
   } else if (outcome.missionCompleted) {
+    logger.info({ demandId: demand.demand_id }, "验证结果已完成任务");
     events.push(
       createEvent(EventType.MISSION_COMPLETED, { summary: "Mission completed after verified execution" }, { demand_id: demand.demand_id })
     );
@@ -210,6 +232,7 @@ export async function onDecisionRequestCreated(event: SchedulerEvent, ctx: Handl
   const payload = event.payload as { decision_request: any };
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (demand) {
+    logger.info({ demandId: demand.demand_id, decisionId: payload.decision_request.decision_id, reasonCode: payload.decision_request.reason_code }, "正在保存决策请求");
     await ctx.repositories.demands.upsert(transitionDemand(demand, {
       state: DemandState.PENDING_DECISION,
       current_phase: DemandPhase.REVIEW,
@@ -220,6 +243,8 @@ export async function onDecisionRequestCreated(event: SchedulerEvent, ctx: Handl
       latest_checkpoint: payload.decision_request.decision_id,
       progress_note: `Decision required: ${payload.decision_request.reason_code}`
     }));
+  } else {
+    logger.warn({ demandId: event.demand_id, decisionId: payload.decision_request.decision_id }, "正在保存决策请求，但未找到对应需求");
   }
   await ctx.repositories.decisions.upsert(payload.decision_request);
   return {};
@@ -230,13 +255,16 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   const decision = await ctx.repositories.decisions.getById(event.decision_id ?? "");
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!decision || !demand) {
+    logger.warn({ demandId: event.demand_id, decisionId: event.decision_id }, "忽略决策响应，因为未找到决策或需求");
     return {};
   }
   const hasActiveExecutions = await demandHasActiveExecutions(demand.demand_id, ctx);
+  logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action: payload.decision_response.action, hasActiveExecutions }, "正在处理决策响应");
 
   if (payload.decision_response.action === DecisionAction.PROVIDE_INFO) {
     const note = payload.decision_response.note?.trim();
     if (!note) {
+      logger.debug({ demandId: demand.demand_id, decisionId: decision.decision_id }, "忽略空的决策补充信息回复");
       return {};
     }
     const replyIntent = classifyDecisionReplyIntent(note);
@@ -254,6 +282,7 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
     ]);
 
     if (replyIntent === "chat" || hasActiveExecutions) {
+      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, replyIntent }, "决策对话已更新");
       await ctx.repositories.decisions.upsert({
         ...decision,
         status: "OPEN" as any,
@@ -275,6 +304,7 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
       return {};
     }
 
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, replyIntent }, "决策指导已接受，准备请求重新规划");
     await ctx.repositories.decisions.upsert({
       ...decision,
       status: "RESOLVED" as any,
@@ -349,12 +379,14 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   }
 
   if (payload.decision_response.action === DecisionAction.PAUSE) {
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "决策请求暂停需求");
     return {
       events: [createEvent(EventType.DEMAND_PAUSED, { action: "pause", note: payload.decision_response.note }, { demand_id: demand.demand_id })]
     };
   }
 
   if (payload.decision_response.action === DecisionAction.CANCEL_DEMAND) {
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "决策请求取消需求");
     return {
       events: [createEvent(EventType.DEMAND_CANCELLED, { action: "cancel", note: payload.decision_response.note }, { demand_id: demand.demand_id })]
     };
@@ -363,6 +395,7 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   if (payload.decision_response.action === DecisionAction.STOP) {
     const events: SchedulerEvent<unknown>[] = [];
     if (event.execution_id) {
+      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, executionId: event.execution_id }, "决策请求停止执行");
       events.push(createEvent(
         EventType.EXECUTION_STOP_REQUESTED,
         { reason: payload.decision_response.note ?? "decision_stop" },
@@ -374,9 +407,11 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   }
 
   if (hasActiveExecutions) {
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "决策已解决，但仍有活跃执行");
     return {};
   }
 
+  logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "决策已解决，准备请求重新规划");
   return {
     events: [createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_decision" }, { demand_id: demand.demand_id })]
   };

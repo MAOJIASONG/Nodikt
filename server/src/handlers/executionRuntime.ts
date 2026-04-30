@@ -6,7 +6,10 @@ import {
   nowIso
 } from "../domain/index.js";
 import { HandlerContext } from "../event_bus/types.js";
+import { createLogger } from "../logger.js";
 import { ACTIVE_EXECUTION_STATES } from "./stateMachine.js";
+
+const logger = createLogger("handlers:execution_runtime");
 
 export async function demandHasActiveExecutions(
   demandId: string,
@@ -38,6 +41,7 @@ export async function syncWorkerExecutionSlots(
 ): Promise<void> {
   const worker = await ctx.repositories.workers.getById(workerId);
   if (!worker) {
+    logger.warn({ workerId }, "无法同步工作器执行槽位，因为未找到工作器");
     return;
   }
 
@@ -54,6 +58,7 @@ export async function syncWorkerExecutionSlots(
     last_error: lastError ?? worker.last_error,
     updated_at: nowIso()
   });
+  logger.debug({ workerId, activeExecutionIds, lastError }, "工作器执行槽位已同步");
 }
 
 export function extractWorkerError(workerResult: { blocker_reason?: { message?: string | null } | null; compressed_history?: string }): string | null {
@@ -72,6 +77,7 @@ export function createWorkerFailureResult(input: {
   const startedAtMs = input.startedAt ? new Date(input.startedAt).getTime() : NaN;
   const durationMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : undefined;
 
+  logger.warn({ executionId: input.executionId, workerId: input.workerId, code: input.code }, "正在创建工作器失败结果");
   return {
     schema_version: "v1",
     execution_id: input.executionId,

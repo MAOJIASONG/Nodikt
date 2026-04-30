@@ -9,6 +9,7 @@ import {
   nowIso
 } from "../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
+import { createLogger } from "../../logger.js";
 import {
   appendConversationTurns,
   readConversationHistory
@@ -19,12 +20,16 @@ import {
 } from "../stateMachine.js";
 import { listActiveExecutionsForDemand } from "../executionRuntime.js";
 
+const logger = createLogger("handlers:demand");
+
 export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const payload = event.payload as { input_text: string; input_kind: string };
+  logger.info({ eventId: event.event_id, inputKind: payload.input_kind, demandId: event.demand_id }, "收到用户输入事件");
   if (payload.input_kind === "initial_demand") {
     const timestamp = nowIso();
     const demandId = event.demand_id ?? createId("demand");
     const settings = await ctx.repositories.loadSettings();
+    logger.info({ demandId }, "开始澄清初始需求");
     const clarification = await ctx.planner.clarifyDemand({
       rawInput: payload.input_text,
       settings
@@ -87,9 +92,11 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     });
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
+      logger.info({ demandId }, "初始需求仍需要用户补充澄清");
       return {};
     }
 
+    logger.info({ demandId }, "初始需求澄清已完成");
     return {
       events: [
         createEvent(
@@ -110,10 +117,12 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
   if (payload.input_kind === "clarification_reply" && event.demand_id) {
     const demand = await ctx.repositories.demands.getById(event.demand_id);
     if (!demand) {
+      logger.warn({ demandId: event.demand_id }, "忽略澄清回复，因为未找到对应需求");
       return {};
     }
     const settings = await ctx.repositories.loadSettings();
     const timestamp = nowIso();
+    logger.info({ demandId: demand.demand_id }, "正在使用用户回复继续澄清需求");
     const clarification = await ctx.planner.clarifyDemand({
       rawInput: [
         `Original demand: ${demand.initial_input}`,
@@ -127,6 +136,7 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     });
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
+      logger.info({ demandId: demand.demand_id }, "澄清回复仍需要更多用户输入");
       await ctx.repositories.demands.upsert(transitionDemand(demand, {
         title: clarification.display_title?.slice(0, 60) || demand.title,
         metadata: {
@@ -148,6 +158,7 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
       return {};
     }
 
+    logger.info({ demandId: demand.demand_id }, "澄清回复已接受");
     await ctx.repositories.demands.upsert(transitionDemand(demand, {
       title: clarification.display_title?.slice(0, 60) || demand.title,
       metadata: {
@@ -184,12 +195,14 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     };
   }
 
+  logger.debug({ eventId: event.event_id, inputKind: payload.input_kind }, "忽略不支持的用户输入类型");
   return {};
 }
 
 export async function onClarificationCompleted(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
+    logger.warn({ demandId: event.demand_id }, "忽略澄清完成事件，因为未找到对应需求");
     return {};
   }
   const payload = event.payload as {
@@ -216,6 +229,7 @@ export async function onClarificationCompleted(event: SchedulerEvent, ctx: Handl
     progress_note: "Clarification completed"
   }));
 
+  logger.info({ demandId: demand.demand_id }, "需求澄清已完成，准备请求初始规划");
   return {
     events: [createEvent(EventType.REPLAN_REQUESTED, { reason: "initial_plan" }, { demand_id: demand.demand_id })]
   };
@@ -224,9 +238,11 @@ export async function onClarificationCompleted(event: SchedulerEvent, ctx: Handl
 export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
+    logger.warn({ demandId: event.demand_id }, "忽略暂停请求，因为未找到对应需求");
     return {};
   }
   if (isTerminalDemand(demand)) {
+    logger.debug({ demandId: demand.demand_id, state: demand.state }, "忽略终态需求的暂停请求");
     return {};
   }
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
@@ -237,6 +253,7 @@ export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext)
   }));
 
   const activeExecutions = await listActiveExecutionsForDemand(demand.demand_id, ctx);
+  logger.info({ demandId: demand.demand_id, activeExecutionCount: activeExecutions.length }, "需求已暂停");
   return {
     events: activeExecutions.map((execution) => createEvent(
       EventType.EXECUTION_STOP_REQUESTED,
@@ -254,9 +271,11 @@ export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext)
 export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
+    logger.warn({ demandId: event.demand_id }, "忽略恢复请求，因为未找到对应需求");
     return {};
   }
   if (isTerminalDemand(demand)) {
+    logger.debug({ demandId: demand.demand_id, state: demand.state }, "忽略终态需求的恢复请求");
     return {};
   }
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
@@ -267,6 +286,7 @@ export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext
     waiting_on: null,
     progress_note: "Demand resumed"
   }));
+  logger.info({ demandId: demand.demand_id }, "需求已恢复，准备请求重新规划");
   return {
     events: [createEvent(EventType.REPLAN_REQUESTED, { reason: "resume" }, { demand_id: demand.demand_id })]
   };
@@ -275,9 +295,11 @@ export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext
 export async function onDemandCancelled(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
+    logger.warn({ demandId: event.demand_id }, "忽略取消请求，因为未找到对应需求");
     return {};
   }
   if (isTerminalDemand(demand)) {
+    logger.debug({ demandId: demand.demand_id, state: demand.state }, "忽略终态需求的取消请求");
     return {};
   }
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
@@ -290,6 +312,7 @@ export async function onDemandCancelled(event: SchedulerEvent, ctx: HandlerConte
   }));
 
   const activeExecutions = await listActiveExecutionsForDemand(demand.demand_id, ctx);
+  logger.info({ demandId: demand.demand_id, activeExecutionCount: activeExecutions.length }, "需求已取消");
   return {
     events: activeExecutions.map((execution) => createEvent(
       EventType.EXECUTION_STOP_REQUESTED,
@@ -307,6 +330,7 @@ export async function onDemandCancelled(event: SchedulerEvent, ctx: HandlerConte
 export async function onMissionCompleted(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
+    logger.warn({ demandId: event.demand_id }, "忽略任务完成事件，因为未找到对应需求");
     return {};
   }
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
@@ -318,5 +342,6 @@ export async function onMissionCompleted(event: SchedulerEvent, ctx: HandlerCont
     waiting_on: null,
     progress_note: "Mission completed"
   }));
+  logger.info({ demandId: demand.demand_id }, "任务已完成");
   return {};
 }

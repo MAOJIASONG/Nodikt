@@ -1,5 +1,6 @@
 import { EventType } from "../domain/index.js";
 import { HandlerMap } from "../event_bus/types.js";
+import { createLogger } from "../logger.js";
 import {
   onClarificationCompleted,
   onDemandCancelled,
@@ -30,8 +31,10 @@ import {
   onVerificationCompleted
 } from "./eventHandlers/reviewHandlers.js";
 
+const logger = createLogger("handlers");
+
 export function createHandlers(): HandlerMap {
-  return {
+  const handlers = {
     [EventType.USER_INPUT_RECEIVED]: onUserInput,
     [EventType.DEMAND_CLARIFICATION_COMPLETED]: onClarificationCompleted,
     [EventType.REPLAN_REQUESTED]: onReplanRequested,
@@ -52,4 +55,6 @@ export function createHandlers(): HandlerMap {
     [EventType.EXECUTION_STOP_REQUESTED]: onExecutionStopRequested,
     [EventType.OPS_ALERT]: onOpsAlert
   };
+  logger.info({ handlerCount: Object.keys(handlers).length }, "调度器事件处理器已注册");
+  return handlers;
 }
