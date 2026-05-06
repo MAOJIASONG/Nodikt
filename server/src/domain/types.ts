@@ -1,3 +1,19 @@
+/**
+ * 文件名称：types.ts
+ * 文件作用：领域类型定义模块，描述 Nodikt 后端核心实体、事件载荷和跨模块数据契约。
+ *
+ * 主要职责：
+ * 1. 定义需求、子目标、执行、工作器、决策、记忆和设置等实体结构。
+ * 2. 定义调度事件载荷映射和处理结果类型。
+ * 3. 为仓储、事件处理器、接口层和工作器适配器提供统一 TypeScript 契约。
+ *
+ * 依赖模块：
+ * - domain/enums：核心状态和动作枚举。
+ *
+ * 注意事项：
+ * - 类型变更通常需要同步更新 validators、数据仓储和前端消费逻辑。
+ * - 本文件只定义类型，不应引入业务执行逻辑。
+ */
 import {
   DecisionAction,
   DecisionReasonCode,
@@ -396,10 +412,40 @@ export interface DecisionResponseReceivedPayload {
   decision_response: DecisionResponse;
 }
 
+export interface ExecutionTimeoutDetectedPayload {
+  timeout_seconds: number;
+  heartbeat_interval_seconds: number;
+  last_heartbeat_at?: string | null;
+  reason: "heartbeat_missing" | "execution_budget_exceeded" | "wall_clock_timeout";
+}
+
+export interface WorkerHealthCheckedPayload {
+  worker_id: string;
+  ok: boolean;
+  message: string;
+  checked_at: string;
+}
+
+export interface OpsRecoveryAttemptedPayload {
+  strategy: "retry_same_worker" | "retry_alternate_worker" | "escalate";
+  reason: string;
+  previous_execution_id?: string | null;
+  next_execution_id?: string | null;
+  attempt: number;
+  max_retry_count: number;
+}
+
+export interface OpsRecoveryFailedPayload {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
 export interface OpsAlertPayload {
   code: string;
   message: string;
   severity: "info" | "warning" | "error";
+  details?: Record<string, unknown>;
 }
 
 export interface MissionCompletedPayload {
@@ -435,6 +481,10 @@ export type EventPayloadMap = {
   [EventType.DEMAND_RESUMED]: DemandControlPayload;
   [EventType.DEMAND_CANCELLED]: DemandControlPayload;
   [EventType.EXECUTION_STOP_REQUESTED]: { reason?: string };
+  [EventType.EXECUTION_TIMEOUT_DETECTED]: ExecutionTimeoutDetectedPayload;
+  [EventType.WORKER_HEALTH_CHECKED]: WorkerHealthCheckedPayload;
+  [EventType.OPS_RECOVERY_ATTEMPTED]: OpsRecoveryAttemptedPayload;
+  [EventType.OPS_RECOVERY_FAILED]: OpsRecoveryFailedPayload;
   [EventType.OPS_ALERT]: OpsAlertPayload;
   [EventType.MISSION_COMPLETED]: MissionCompletedPayload;
 };
