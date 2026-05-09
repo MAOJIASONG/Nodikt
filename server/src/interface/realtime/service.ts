@@ -20,6 +20,7 @@ import { WebSocketServer } from "ws";
 
 import { DemandView, SchedulerEvent } from "../../domain/index.js";
 import { RepositoryBundle } from "../../brain/store/repositories/index.js";
+import { deriveSessionFromDemand } from "../../brain/scheduler/handlers/sessionState.js";
 
 export class WsBroadcaster {
   constructor(
@@ -70,7 +71,8 @@ export class WsBroadcaster {
       return null;
     }
 
-    const [subgoals, executions, decisions, memory, events] = await Promise.all([
+    const [session, subgoals, executions, decisions, memory, events] = await Promise.all([
+      this.repositories.sessions.getById(`session_${demandId}`),
       this.repositories.subgoals.list(),
       this.repositories.executions.list(),
       this.repositories.decisions.list(),
@@ -78,8 +80,11 @@ export class WsBroadcaster {
       this.repositories.events.list()
     ]);
 
+    const demandSession = session ?? deriveSessionFromDemand(demand);
+
     return {
       demand,
+      session: demandSession,
       subgoals: subgoals.filter((item) => item.demand_id === demandId),
       executions: executions.filter((item) => item.demand_id === demandId),
       decisions: decisions.filter((item) => item.demand_id === demandId),

@@ -92,6 +92,20 @@ export const demandSchema = z.object({
   metadata: z.record(z.unknown()).optional()
 });
 
+export const sessionSchema = z.object({
+  session_id: z.string().min(1),
+  demand_id: z.string().min(1),
+  phase: z.nativeEnum(DemandPhase),
+  current_summary: z.string(),
+  frontier_subgoal_ids: z.array(z.string()),
+  waiting_on: z.string().nullable(),
+  latest_checkpoint: z.string().nullable(),
+  last_progress_at: z.string().datetime(),
+  status: z.nativeEnum(DemandState),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime()
+});
+
 export const executionSchema = z.object({
   execution_id: z.string().min(1),
   demand_id: z.string().min(1),
@@ -247,6 +261,12 @@ export const subgoalsCollectionSchema = z.object({
   version: z.literal("v1"),
   updated_at: z.string().datetime(),
   items: z.array(subgoalContractSchema)
+});
+
+export const sessionsCollectionSchema = z.object({
+  version: z.literal("v1"),
+  updated_at: z.string().datetime(),
+  items: z.array(sessionSchema)
 });
 
 export const executionsCollectionSchema = z.object({

@@ -23,6 +23,7 @@ import { createEvent, createId, DecisionAction, DemandState, EventType, Executio
 import { EventBus } from "../../brain/scheduler/event_bus/index.js";
 import { RepositoryBundle } from "../../brain/store/repositories/index.js";
 import { AdapterRegistry } from "../../worker/adapters/registry.js";
+import { deriveSessionFromDemand } from "../../brain/scheduler/handlers/sessionState.js";
 
 /**
  * 函数作用：创建后端 HTTP API 路由。
@@ -137,7 +138,8 @@ export function createApiRouter(
         return;
       }
 
-      const [subgoals, executions, decisions, memory, events] = await Promise.all([
+      const [session, subgoals, executions, decisions, memory, events] = await Promise.all([
+        repositories.sessions.getById(`session_${demand.demand_id}`),
         repositories.subgoals.list(),
         repositories.executions.list(),
         repositories.decisions.list(),
@@ -147,6 +149,7 @@ export function createApiRouter(
 
       res.json({
         demand,
+        session: session ?? deriveSessionFromDemand(demand),
         subgoals: subgoals.filter((item) => item.demand_id === demand.demand_id),
         executions: executions.filter((item) => item.demand_id === demand.demand_id),
         decisions: decisions.filter((item) => item.demand_id === demand.demand_id),
@@ -167,7 +170,8 @@ export function createApiRouter(
         return;
       }
 
-      const [subgoals, executions, decisions, memory, events, workers] = await Promise.all([
+      const [sessions, subgoals, executions, decisions, memory, events, workers] = await Promise.all([
+        repositories.sessions.list(),
         repositories.subgoals.list(),
         repositories.executions.list(),
         repositories.decisions.list(),
@@ -194,6 +198,7 @@ export function createApiRouter(
 
       await Promise.all([
         repositories.demands.delete(demandId),
+        repositories.sessions.saveAll(sessions.filter((item) => item.demand_id !== demandId)),
         repositories.subgoals.saveAll(subgoals.filter((item) => item.demand_id !== demandId)),
         repositories.executions.saveAll(executions.filter((item) => item.demand_id !== demandId)),
         repositories.decisions.saveAll(decisions.filter((item) => item.demand_id !== demandId)),
