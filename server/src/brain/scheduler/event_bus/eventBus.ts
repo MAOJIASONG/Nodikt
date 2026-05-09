@@ -19,6 +19,7 @@
  */
 import { EventType, SchedulerEvent } from "../../../domain/index.js";
 import { RepositoryBundle } from "../../store/repositories/index.js";
+import { deriveSessionFromDemand } from "../handlers/sessionState.js";
 import { HandlerContext, HandlerMap } from "./types.js";
 
 export class EventBus {
@@ -27,6 +28,17 @@ export class EventBus {
     private readonly repositories: RepositoryBundle,
     private readonly contextFactory: (publish: (event: SchedulerEvent<unknown>) => Promise<void>) => Omit<HandlerContext, "publish">
   ) {}
+
+  private async syncSessionSnapshot(demandId?: string | null): Promise<void> {
+    if (!demandId) {
+      return;
+    }
+    const demand = await this.repositories.demands.getById(demandId);
+    if (!demand) {
+      return;
+    }
+    await this.repositories.sessions.upsert(deriveSessionFromDemand(demand));
+  }
 
   /**
    * 函数作用：发布调度事件并触发对应处理器。
@@ -45,6 +57,7 @@ export class EventBus {
     const handler = this.handlers[event.event_type as EventType];
     if (!handler) {
       const ctx = this.contextFactory(this.publish.bind(this));
+      await this.syncSessionSnapshot(event.demand_id);
       await ctx.wsBroadcaster.broadcastEvent(event);
       return;
     }
@@ -55,6 +68,7 @@ export class EventBus {
     };
 
     const result = await handler(event, ctx);
+    await this.syncSessionSnapshot(event.demand_id);
     await ctx.wsBroadcaster.broadcastEvent(event);
 
     if (result.events) {

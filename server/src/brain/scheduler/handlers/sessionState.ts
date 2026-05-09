@@ -14,7 +14,7 @@
  * - 会话状态存放在 metadata 中，读写时要兼容历史数据缺失或结构不完整。
  * - 意图识别规则应保持可解释，避免误触发重试或重规划。
  */
-import { DemandPhase } from "../../../domain/index.js";
+import { Demand, DemandPhase, Session } from "../../../domain/index.js";
 
 export type ConversationTurn = {
   role: "user" | "assistant";
@@ -30,6 +30,15 @@ export type RuntimeSessionPatch = {
   frontier_subgoal_ids?: string[];
   latest_checkpoint?: string;
   progress_note?: string;
+};
+
+type RuntimeSessionSnapshot = {
+  phase?: DemandPhase;
+  waiting_on?: string | null;
+  frontier_subgoal_ids?: string[];
+  latest_checkpoint?: string | null;
+  progress_note?: string;
+  last_progress_at?: string;
 };
 
 /**
@@ -63,6 +72,47 @@ export function patchRuntimeSession(
       ...(patch.progress_note ? { progress_note: patch.progress_note } : {}),
       last_progress_at: timestamp
     }
+  };
+}
+
+/**
+ * Build the standalone Session Store snapshot from the legacy demand metadata
+ * runtime state. Keeping this projection here lets handlers migrate gradually.
+ */
+export function deriveSessionFromDemand(demand: Demand): Session {
+  const runtime = (
+    demand.metadata?.runtime_session && typeof demand.metadata.runtime_session === "object"
+      ? demand.metadata.runtime_session as RuntimeSessionSnapshot
+      : {}
+  );
+  const latestPlan = (
+    demand.metadata?.latest_plan && typeof demand.metadata.latest_plan === "object"
+      ? demand.metadata.latest_plan as {
+          high_level_summary?: {
+            mission_state_summary?: string;
+          };
+        }
+      : {}
+  );
+  const currentSummary = runtime.progress_note
+    ?? latestPlan.high_level_summary?.mission_state_summary
+    ?? demand.clarified_demand
+    ?? demand.initial_input
+    ?? demand.title;
+  const lastProgressAt = runtime.last_progress_at ?? demand.updated_at;
+
+  return {
+    session_id: `session_${demand.demand_id}`,
+    demand_id: demand.demand_id,
+    phase: runtime.phase ?? demand.current_phase,
+    current_summary: currentSummary,
+    frontier_subgoal_ids: runtime.frontier_subgoal_ids ?? [],
+    waiting_on: runtime.waiting_on ?? null,
+    latest_checkpoint: runtime.latest_checkpoint ?? null,
+    last_progress_at: lastProgressAt,
+    status: demand.state,
+    created_at: demand.created_at,
+    updated_at: demand.updated_at
   };
 }
 

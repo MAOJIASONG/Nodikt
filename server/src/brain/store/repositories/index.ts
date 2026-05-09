@@ -25,6 +25,7 @@ import {
   Execution,
   MemoryRecord,
   SchedulerEvent,
+  Session,
   Settings,
   SubgoalContract,
   WorkerRegistration
@@ -40,6 +41,8 @@ import {
   memoryCollectionSchema,
   memoryRecordSchema,
   schedulerEventSchema,
+  sessionSchema,
+  sessionsCollectionSchema,
   settingsSchema,
   subgoalContractSchema,
   subgoalsCollectionSchema,
@@ -53,6 +56,7 @@ import { SettingsRepository } from "./settingsRepository.js";
 export class RepositoryBundle {
   public readonly store: JsonFileStore;
   public readonly demands: CollectionRepository<Demand>;
+  public readonly sessions: CollectionRepository<Session>;
   public readonly subgoals: CollectionRepository<SubgoalContract>;
   public readonly executions: CollectionRepository<Execution>;
   public readonly workers: CollectionRepository<WorkerRegistration>;
@@ -64,6 +68,7 @@ export class RepositoryBundle {
   constructor(dataDir: string) {
     this.store = new JsonFileStore(path.resolve(dataDir));
     this.demands = new CollectionRepository(this.store, "demands.json", "demand_id", demandsCollectionSchema, demandSchema);
+    this.sessions = new CollectionRepository(this.store, "sessions.json", "session_id", sessionsCollectionSchema, sessionSchema);
     this.subgoals = new CollectionRepository(this.store, "subgoals.json", "subgoal_id", subgoalsCollectionSchema, subgoalContractSchema);
     this.executions = new CollectionRepository(this.store, "executions.json", "execution_id", executionsCollectionSchema, executionSchema);
     this.workers = new CollectionRepository(this.store, "workers.json", "worker_id", workersCollectionSchema, workerRegistrationSchema);

@@ -110,6 +110,20 @@ export interface Demand {
   metadata?: Record<string, unknown>;
 }
 
+export interface Session {
+  session_id: string;
+  demand_id: string;
+  phase: DemandPhase;
+  current_summary: string;
+  frontier_subgoal_ids: string[];
+  waiting_on: string | null;
+  latest_checkpoint: string | null;
+  last_progress_at: string;
+  status: DemandState;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Execution {
   execution_id: string;
   demand_id: string;
@@ -491,6 +505,7 @@ export type EventPayloadMap = {
 
 export interface DemandView {
   demand: Demand;
+  session: Session | null;
   subgoals: SubgoalContract[];
   executions: Execution[];
   decisions: DecisionRequest[];
