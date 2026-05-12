@@ -1,174 +1,36 @@
 import type { CSSProperties } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-type Demand = {
-  demand_id: string;
-  title: string;
-  state: string;
-  current_phase: string;
-  clarified_demand: string | null;
-  initial_input: string;
-  dashboard_summary?: {
-    current_subgoal_title?: string | null;
-    worker_count?: number;
-  };
-  metadata?: {
-    clarification_question?: string | null;
-    conversation_history?: Array<{
-      role: "user" | "assistant";
-      content: string;
-      created_at: string;
-    }>;
-    latest_plan?: {
-      planning_round: number;
-      frontier_subgoal_ids: string[];
-      overall_plan_outline: Array<{
-        plan_item_id: string;
-        title: string;
-        objective: string;
-        execution_mode: "parallel" | "sequential";
-        rationale: string;
-        frontier_subgoal_ids?: string[];
-      }>;
-      high_level_summary: {
-        mission_state_summary: string;
-        episodic_trace_summary: string;
-        lessons_or_policy_summary: string;
-      };
-    };
-  };
-};
+import { apiRequest } from "./api/client";
+import { createNodiktSocket } from "./api/socket";
+import type {
+  AdapterType,
+  ConversationMessage,
+  Decision,
+  DecisionAction,
+  Demand,
+  DemandDetail,
+  Execution,
+  ModelConfig,
+  RuntimeType,
+  Settings,
+  Worker,
+  WorkerRegistrationPayload,
+  WorkerResultEventPayload,
+  WorkerTile
+} from "./api/types";
 
-type Worker = {
-  worker_id: string;
+type WorkerDraft = {
   name: string;
-  adapter_type: string;
-  status: string;
-  capabilities: string[];
-};
-
-type WorkerTile = {
-  key: string;
-  name: string;
-  subtitle: string;
-  capabilities: string[];
-  lamp: "online" | "offline" | "fault";
-};
-
-type ConversationMessage = {
-  role: "user" | "assistant";
-  content: string;
-  created_at: string;
-  optimistic?: boolean;
-};
-
-type Decision = {
-  decision_id: string;
-  prompt: string;
-  status: string;
-  options?: string[];
-  reason_code?: string;
-  source?: string;
-  subgoal_id?: string | null;
-  execution_id?: string | null;
-  metadata?: {
-    conversation_history?: Array<{
-      role: "assistant" | "user";
-      content: string;
-      created_at: string;
-    }>;
-  };
-};
-
-type ArtifactRef = {
-  artifact_id: string;
-  artifact_type: string;
-  uri: string;
-};
-
-type Execution = {
-  execution_id: string;
-  subgoal_id: string;
-  worker_id: string;
-  state: string;
-  latest_worker_status: string | null;
-  result_status: string | null;
-  claimed_outcome: string | null;
-  compressed_history: string;
-  artifacts: ArtifactRef[];
-  created_at: string;
-  updated_at: string;
-};
-
-type WorkerResultEventPayload = {
-  worker_result?: {
-    execution_id: string;
-    worker_status?: string | null;
-    claimed_outcome?: string | null;
-    compressed_history?: string;
-    produced_artifacts?: ArtifactRef[];
-    blocker_reason?: {
-      code?: string;
-      message?: string;
-    } | null;
-    suggested_next_step?: string | null;
-  };
-};
-
-type DemandEvent = {
-  event_id: string;
-  event_type: string;
-  created_at: string;
-  execution_id?: string | null;
-  subgoal_id?: string | null;
-  payload?: WorkerResultEventPayload | Record<string, unknown>;
-};
-
-type DemandDetail = {
-  demand: Demand;
-  subgoals: Array<{ subgoal_id: string; title: string; state: string; objective: string }>;
-  executions: Execution[];
-  decisions: Decision[];
-  events: DemandEvent[];
-  memory: Array<{ memory_id: string; category: string; content: string }>;
-};
-
-type ModelConfig = {
-  provider: string;
-  model: string;
-  base_url: string;
-  api_key: string;
-  enabled: boolean;
-};
-
-type Settings = {
-  version: "v1";
-  updated_at: string;
-  models: {
-    primary: ModelConfig;
-    planner: ModelConfig;
-    verifier: ModelConfig;
-    ops_backup: ModelConfig;
-  };
+  adapter_type: AdapterType;
+  runtime_type: RuntimeType;
+  max_concurrency: number;
+  capabilities: string;
   workspace_root: string;
-  runtime: {
-    heartbeat_interval_seconds: number;
-    execution_timeout_seconds: number;
-    max_retry_count: number;
-  };
-  worker_policy: {
-    skill_install_scope: string;
-  };
-  default_autonomy_level: string;
-  default_permissions: {
-    can_modify_files: boolean;
-    can_run_commands: boolean;
-    can_install_dependencies: boolean;
-    can_open_pr: boolean;
-  };
+  command: string;
+  args: string;
+  endpoint: string;
 };
-
-const API_BASE = `${window.location.origin}/api`;
 
 const EMPTY_SETTINGS: Settings = {
   version: "v1",
@@ -197,14 +59,25 @@ const EMPTY_SETTINGS: Settings = {
   }
 };
 
+const DEFAULT_WORKER_DRAFT: WorkerDraft = {
+  name: "OpenCode",
+  adapter_type: "opencode",
+  runtime_type: "local_command",
+  max_concurrency: 1,
+  capabilities: "code_generation, file_edit, command_execution",
+  workspace_root: "",
+  command: "",
+  args: "",
+  endpoint: ""
+};
+
 export function App() {
   const [tab, setTab] = useState<"Dashboard" | "Workers" | "Settings">("Dashboard");
   const [dashboardView, setDashboardView] = useState<"board" | "detail" | "create">("board");
   const [demands, setDemands] = useState<Demand[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
-  const [localWorkerPaths, setLocalWorkerPaths] = useState<string[]>([]);
   const [showWorkerCreateModal, setShowWorkerCreateModal] = useState(false);
-  const [newWorkerPath, setNewWorkerPath] = useState("");
+  const [workerDraft, setWorkerDraft] = useState<WorkerDraft>(DEFAULT_WORKER_DRAFT);
   const [detail, setDetail] = useState<DemandDetail | null>(null);
   const [activeDemandId, setActiveDemandId] = useState<string | null>(null);
   const [newDemand, setNewDemand] = useState("");
@@ -214,13 +87,13 @@ export function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [replySubmitting, setReplySubmitting] = useState(false);
   const [assistantTyping, setAssistantTyping] = useState(false);
-  const [deleteSubmittingId, setDeleteSubmittingId] = useState<string | null>(null);
+  const [controlSubmittingId, setControlSubmittingId] = useState<string | null>(null);
   const [boardDismissingId, setBoardDismissingId] = useState<string | null>(null);
   const [conversationPending, setConversationPending] = useState<ConversationMessage[]>([]);
   const [selectedSubgoalDialog, setSelectedSubgoalDialog] = useState<{ subgoalId: string; mode: "success" | "failed" | "issue" } | null>(null);
   const [subgoalDialogClosing, setSubgoalDialogClosing] = useState(false);
   const [planTransitionMode, setPlanTransitionMode] = useState<"idle" | "exiting" | "replanning">("idle");
-  const [decisionNote, setDecisionNote] = useState("");
+  const [decisionNotes, setDecisionNotes] = useState<Record<string, string>>({});
   const [decisionSubmitting, setDecisionSubmitting] = useState<string | null>(null);
   const [expandedPlanItemId, setExpandedPlanItemId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(EMPTY_SETTINGS);
@@ -228,6 +101,7 @@ export function App() {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState("");
+  const [workerSubmitting, setWorkerSubmitting] = useState(false);
   const boardCardRefs = useRef<Record<string, HTMLElement | null>>({});
   const previousBoardRects = useRef<Map<string, DOMRect>>(new Map());
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
@@ -245,6 +119,46 @@ export function App() {
   const completedDemandCount = demands.filter((item) => item.state === "COMPLETED").length;
   const openDecisionCount = detail?.decisions.filter((item) => item.status === "OPEN").length ?? 0;
   const openDecisions = detail?.decisions.filter((item) => item.status === "OPEN") ?? [];
+
+  type ActionRequiredKind = "decision" | "alignment" | "blocked";
+  type ActionRequiredEntry = {
+    demand: Demand;
+    kind: ActionRequiredKind;
+    label: string;
+    hint: string;
+  };
+
+  const actionRequiredEntries: ActionRequiredEntry[] = demands
+    .map<ActionRequiredEntry | null>((demand) => {
+      if (demand.state === "PENDING_DECISION" || demand.active_decision_id) {
+        return {
+          demand,
+          kind: "decision",
+          label: "Decision",
+          hint: "Awaiting your decision"
+        };
+      }
+      if (demand.state === "BLOCKED") {
+        return {
+          demand,
+          kind: "blocked",
+          label: "Blocked",
+          hint: "Execution is blocked, intervention required"
+        };
+      }
+      if (demand.state === "PENDING_ALIGNMENT" || demand.metadata?.clarification_question) {
+        return {
+          demand,
+          kind: "alignment",
+          label: "Clarify",
+          hint: "Clarification reply needed"
+        };
+      }
+      return null;
+    })
+    .filter((entry): entry is ActionRequiredEntry => entry !== null);
+
+  const actionRequiredCount = actionRequiredEntries.length;
   const runningExecutionCount = detail?.executions.filter((item) => item.state === "RUNNING" || item.latest_worker_status === "running").length ?? 0;
   const assignedWorkerBySubgoalId = new Map(
     (detail?.executions ?? []).map((execution) => [execution.subgoal_id, execution.worker_id])
@@ -282,7 +196,6 @@ export function App() {
     }
     setSelectedSubgoalDialog({ subgoalId, mode });
     setSubgoalDialogClosing(false);
-    setDecisionNote("");
   }
 
   function closeSubgoalDialog() {
@@ -293,7 +206,6 @@ export function App() {
     subgoalDialogCloseTimerRef.current = window.setTimeout(() => {
       setSelectedSubgoalDialog(null);
       setSubgoalDialogClosing(false);
-      setDecisionNote("");
       subgoalDialogCloseTimerRef.current = null;
     }, 220);
   }
@@ -325,26 +237,18 @@ export function App() {
     return "offline";
   }
 
-  function createLocalWorkerTile(pathValue: string, index: number): WorkerTile {
-    return {
-      key: `local-${pathValue}`,
-      name: `OpenCode-${index + 1}`,
-      subtitle: "Configured",
-      capabilities: ["Code generation", "File editing", "Command execution"],
-      lamp: "offline"
-    };
-  }
-
   const workerTiles: WorkerTile[] = (() => {
     const configured = workers.map((worker) => ({
       key: worker.worker_id,
       name: worker.name,
-      subtitle: worker.adapter_type,
+      subtitle: `${worker.adapter_type} / ${worker.runtime_type ?? "local_command"}`,
       capabilities: worker.capabilities,
-      lamp: workerLamp(worker)
+      lamp: workerLamp(worker),
+      status: worker.status,
+      meta: worker.current_execution_ids?.length
+        ? `${worker.current_execution_ids.length} active execution${worker.current_execution_ids.length === 1 ? "" : "s"}`
+        : worker.config?.workspace_root
     }));
-
-    const localConfigured = localWorkerPaths.map((pathValue, index) => createLocalWorkerTile(pathValue, index));
 
     const placeholders: WorkerTile[] = [
       {
@@ -370,24 +274,85 @@ export function App() {
       }
     ];
 
-    const existingNames = new Set([...configured, ...localConfigured].map((item) => item.name.toLowerCase()));
+    const existingNames = new Set(configured.map((item) => item.name.toLowerCase()));
     return [
       ...configured,
-      ...localConfigured,
       ...placeholders.filter((item) => !existingNames.has(item.name.toLowerCase()))
     ];
   })();
 
-  function submitLocalWorkerPath() {
-    const trimmed = newWorkerPath.trim();
+  function parseCsv(value: string): string[] {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function parseCommandArgs(value: string): string[] | undefined {
+    const trimmed = value.trim();
     if (!trimmed) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [trimmed];
+    } catch {
+      return trimmed.split(/\s+/).filter(Boolean);
+    }
+  }
+
+  function updateWorkerDraft<K extends keyof WorkerDraft>(field: K, value: WorkerDraft[K]) {
+    setWorkerDraft((current) => ({
+      ...current,
+      [field]: value
+    }));
+  }
+
+  async function registerWorker() {
+    const name = workerDraft.name.trim();
+    const workspaceRoot = workerDraft.workspace_root.trim() || settings.workspace_root || settingsDraft.workspace_root;
+    const capabilities = parseCsv(workerDraft.capabilities);
+
+    if (!name || !workspaceRoot || capabilities.length === 0) {
       return;
     }
-    setLocalWorkerPaths((current) => (
-      current.includes(trimmed) ? current : [...current, trimmed]
-    ));
-    setNewWorkerPath("");
-    setShowWorkerCreateModal(false);
+
+    const payload: WorkerRegistrationPayload = {
+      name,
+      adapter_type: workerDraft.adapter_type,
+      runtime_type: workerDraft.runtime_type,
+      max_concurrency: Math.max(1, Number(workerDraft.max_concurrency) || 1),
+      capabilities,
+      config: {
+        workspace_root: workspaceRoot,
+        ...(workerDraft.command.trim() ? { command: workerDraft.command.trim() } : {}),
+        ...(parseCommandArgs(workerDraft.args) ? { args: parseCommandArgs(workerDraft.args) } : {}),
+        ...(workerDraft.endpoint.trim() ? { endpoint: workerDraft.endpoint.trim() } : {})
+      }
+    };
+
+    setWorkerSubmitting(true);
+    try {
+      const registered = await apiRequest<Worker>("/workers/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      setWorkers((current) => {
+        const next = current.filter((worker) => worker.worker_id !== registered.worker_id);
+        return [...next, registered];
+      });
+      setWorkerDraft({
+        ...DEFAULT_WORKER_DRAFT,
+        workspace_root: workspaceRoot
+      });
+      setShowWorkerCreateModal(false);
+      await loadDashboard({ silent: true });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to register worker");
+    } finally {
+      setWorkerSubmitting(false);
+    }
   }
 
   function stateTone(value: string): "success" | "warning" | "danger" | "neutral" | "info" {
@@ -518,6 +483,31 @@ export function App() {
     }[stage];
   }
 
+  function decisionActionLabel(action: string): string {
+    return {
+      Approve: "Approve",
+      Reject: "Reject",
+      ProvideInfo: "Reply",
+      Pause: "Pause",
+      Stop: "Stop",
+      CancelDemand: "Cancel Demand"
+    }[action] ?? action;
+  }
+
+  function decisionActionClass(action: string): string {
+    if (["Reject", "Stop", "CancelDemand"].includes(action)) {
+      return "ghost-button danger-button";
+    }
+    if (action === "Approve") {
+      return "primary";
+    }
+    return "ghost-button";
+  }
+
+  function decisionActionNeedsNote(action: string): boolean {
+    return action === "ProvideInfo";
+  }
+
   function summarizeDecisionPrompt(prompt: string): string {
     try {
       const parsed = JSON.parse(prompt) as Record<string, unknown>;
@@ -606,14 +596,13 @@ export function App() {
       setDashboardLoading(true);
     }
     try {
-      const [demandsRes, workersRes, settingsRes] = await Promise.all([
-        fetch(`${API_BASE}/demands`),
-        fetch(`${API_BASE}/workers`),
-        fetch(`${API_BASE}/settings`)
+      const [nextDemands, nextWorkers, nextSettings] = await Promise.all([
+        apiRequest<Demand[]>("/demands"),
+        apiRequest<Worker[]>("/workers"),
+        apiRequest<Settings>("/settings")
       ]);
-      setDemands(await demandsRes.json());
-      setWorkers(await workersRes.json());
-      const nextSettings = await settingsRes.json();
+      setDemands(nextDemands);
+      setWorkers(nextWorkers);
       setSettings(nextSettings);
       if (!settingsDirty) {
         setSettingsDraft(nextSettings);
@@ -630,8 +619,7 @@ export function App() {
     setActiveDemandId(demandId);
     setDetailLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/demands/${demandId}`);
-      const nextDetail = await response.json();
+      const nextDetail = await apiRequest<DemandDetail>(`/demands/${demandId}`);
       if (requestId !== detailRequestRef.current) {
         return;
       }
@@ -658,25 +646,12 @@ export function App() {
     setDetail(null);
     setDetailLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/demands`, {
+      const created = await apiRequest<Demand>("/demands", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ initial_input: newDemand })
       });
 
-      if (createSessionId !== createSessionRef.current) {
-        return;
-      }
-
-      if (!response.ok) {
-        const error = await response.json();
-        setDashboardView("create");
-        setDetailLoading(false);
-        window.alert(error.error ?? "Failed to create demand");
-        return;
-      }
-
-      const created = await response.json();
       if (createSessionId !== createSessionRef.current) {
         return;
       }
@@ -694,6 +669,10 @@ export function App() {
       if (created?.demand_id) {
         await loadDemandDetail(created.demand_id);
       }
+    } catch (error) {
+      setDashboardView("create");
+      setDetailLoading(false);
+      window.alert(error instanceof Error ? error.message : "Failed to create demand");
     } finally {
       if (createSessionId === createSessionRef.current) {
         setCreateSubmitting(false);
@@ -701,22 +680,47 @@ export function App() {
     }
   }
 
-  async function deleteDemand(demandId: string, options?: { animateBoardExit?: boolean }) {
-    if (options?.animateBoardExit) {
-      setBoardDismissingId(demandId);
-      await new Promise((resolve) => window.setTimeout(resolve, 220));
-    }
-    setDeleteSubmittingId(demandId);
+  async function controlDemand(demandId: string, action: "pause" | "resume" | "cancel" | "interrupt", note?: string, options?: { returnToBoardAfterCancel?: boolean }) {
+    setControlSubmittingId(demandId);
     try {
-      await fetch(`${API_BASE}/demands/${demandId}`, { method: "DELETE" });
-      if (detail?.demand.demand_id === demandId || activeDemandId === demandId) {
+      await apiRequest<{ ok: true }>(`/demands/${demandId}/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, note })
+      });
+      await loadDashboard();
+      if (activeDemandId === demandId && action !== "cancel") {
+        await loadDemandDetail(demandId);
+      }
+      if (action === "cancel" && options?.returnToBoardAfterCancel) {
         setDetail(null);
         setActiveDemandId(null);
+        setDashboardView("board");
       }
-      await loadDashboard();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to control demand");
     } finally {
-      setDeleteSubmittingId(null);
+      setControlSubmittingId(null);
       setBoardDismissingId((current) => (current === demandId ? null : current));
+    }
+  }
+
+  async function interruptExecution(executionId: string, demandId: string, note?: string) {
+    setControlSubmittingId(executionId);
+    try {
+      await apiRequest<{ ok: true }>(`/executions/${executionId}/interrupt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note })
+      });
+      await loadDashboard();
+      if (activeDemandId === demandId) {
+        await loadDemandDetail(demandId);
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to interrupt execution");
+    } finally {
+      setControlSubmittingId(null);
     }
   }
 
@@ -739,21 +743,17 @@ export function App() {
     setClarificationReply("");
 
     try {
-      const response = await fetch(`${API_BASE}/demands/${detail.demand.demand_id}/messages`, {
+      await apiRequest<{ ok: true }>(`/demands/${detail.demand.demand_id}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input_text: replyText })
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        setClarificationReply(replyText);
-        window.alert(error.error ?? "Failed to send clarification reply");
-        return;
-      }
-
       await loadDashboard();
       await loadDemandDetail(detail.demand.demand_id);
+    } catch (error) {
+      setClarificationReply(replyText);
+      window.alert(error instanceof Error ? error.message : "Failed to send clarification reply");
     } finally {
       setReplySubmitting(false);
       setAssistantTyping(false);
@@ -764,27 +764,39 @@ export function App() {
   async function saveSettings() {
     setSettingsSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/settings`, {
+      const saved = await apiRequest<Settings>("/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settingsDraft)
       });
-      const saved = await response.json();
       setSettings(saved);
       setSettingsDraft(saved);
       setSettingsDirty(false);
       setSettingsStatus("Settings saved");
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
       setSettingsSaving(false);
     }
   }
 
-  async function respondToDecision(decisionId: string, action: string) {
+  function decisionNoteFor(decisionId: string): string {
+    return decisionNotes[decisionId] ?? "";
+  }
+
+  function updateDecisionNote(decisionId: string, value: string) {
+    setDecisionNotes((current) => ({
+      ...current,
+      [decisionId]: value
+    }));
+  }
+
+  async function respondToDecision(decisionId: string, action: DecisionAction) {
     if (!detail) {
       return;
     }
 
-    const note = decisionNote.trim();
+    const note = decisionNoteFor(decisionId).trim();
     const triggerReplanTransition = action === "ProvideInfo" && shouldTriggerPlanReplan(note);
 
     if (triggerReplanTransition) {
@@ -802,7 +814,7 @@ export function App() {
 
     setDecisionSubmitting(decisionId);
     try {
-      const response = await fetch(`${API_BASE}/decisions/${decisionId}/respond`, {
+      await apiRequest<{ ok: true }>(`/decisions/${decisionId}/respond`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -811,24 +823,46 @@ export function App() {
         })
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        if (triggerReplanTransition) {
-          setPlanTransitionMode("idle");
-        }
-        window.alert(error.error ?? "Failed to respond to decision");
-        return;
-      }
-
-      setDecisionNote("");
+      setDecisionNotes((current) => {
+        const next = { ...current };
+        delete next[decisionId];
+        return next;
+      });
       await loadDashboard();
       await loadDemandDetail(detail.demand.demand_id);
       if (triggerReplanTransition) {
         setPlanTransitionMode("idle");
       }
+      if (action !== "ProvideInfo") {
+        closeSubgoalDialog();
+      }
+    } catch (error) {
+      if (triggerReplanTransition) {
+        setPlanTransitionMode("idle");
+      }
+      window.alert(error instanceof Error ? error.message : "Failed to respond to decision");
     } finally {
       setDecisionSubmitting(null);
     }
+  }
+
+  function renderDecisionActions(decision: Decision) {
+    const actions = (decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[];
+    return actions.map((action) => {
+      const needsNote = decisionActionNeedsNote(action);
+      const disabled = decisionSubmitting === decision.decision_id || (needsNote && !decisionNoteFor(decision.decision_id).trim());
+      return (
+        <button
+          key={`${decision.decision_id}-${action}`}
+          type="button"
+          className={decisionActionClass(action)}
+          disabled={disabled}
+          onClick={() => void respondToDecision(decision.decision_id, action)}
+        >
+          {decisionSubmitting === decision.decision_id ? "Sending..." : decisionActionLabel(action)}
+        </button>
+      );
+    });
   }
 
   function updateModel(
@@ -865,6 +899,7 @@ export function App() {
   const showSidebar = tab === "Dashboard" && dashboardView !== "board";
   const showCreateModal = tab === "Dashboard" && dashboardView === "create";
   const latestPlan = detail?.demand.metadata?.latest_plan;
+  const runtimeSession = detail?.demand.metadata?.runtime_session;
   const demandSummary = latestPlan?.high_level_summary?.mission_state_summary;
   const planOutline = latestPlan?.overall_plan_outline ?? [];
   const boardDemands = demands.slice(0, 12);
@@ -880,15 +915,17 @@ export function App() {
       ? "Creating demand"
       : detailLoading
         ? "Loading demand"
-        : deleteSubmittingId
-          ? "Deleting demand"
-          : settingsSaving
-            ? "Saving settings"
-            : decisionSubmitting
-              ? "Submitting decision"
-              : dashboardLoading
-                ? "Syncing"
-                : "";
+        : settingsSaving
+          ? "Saving settings"
+          : decisionSubmitting
+            ? "Submitting decision"
+            : controlSubmittingId
+              ? "Sending control"
+              : workerSubmitting
+                ? "Registering worker"
+                : dashboardLoading
+                  ? "Syncing"
+                  : "";
 
   const alignmentInProgress = Boolean(detail && demandNeedsClarification(detail.demand));
   const planIsTransitioning = planTransitionMode === "replanning";
@@ -1015,14 +1052,12 @@ export function App() {
   useEffect(() => {
     void loadDashboard({ silent: true });
 
-    const socket = new WebSocket(`${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`);
-    socket.onmessage = (message) => {
-      const data = JSON.parse(message.data) as { type: string; payload: unknown };
+    const socket = createNodiktSocket((data) => {
       if (data.type === "workers") {
-        setWorkers(data.payload as Worker[]);
+        setWorkers(data.payload);
       }
       if (data.type === "demand_view" && activeDemandId && data.payload) {
-        const payload = data.payload as DemandDetail;
+        const payload = data.payload;
         if (payload.demand.demand_id === activeDemandId && createSessionRef.current >= 0) {
           setDetail(payload);
         }
@@ -1030,7 +1065,7 @@ export function App() {
       if (data.type === "event") {
         void loadDashboard({ silent: true });
       }
-    };
+    });
     return () => socket.close();
   }, [activeDemandId, settingsDirty]);
 
@@ -1084,10 +1119,51 @@ export function App() {
               onClick={() => setTab(item)}
             >
               {item}
+              {item === "Dashboard" && actionRequiredCount > 0 ? (
+                <span className="tab-action-badge" aria-label={`${actionRequiredCount} actions required`}>
+                  {actionRequiredCount}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
       </header>
+
+      {actionRequiredCount > 0 && (
+        <div className="action-required-bar" role="alert">
+          <div className="action-required-bar-left">
+            <span className="action-required-pulse" aria-hidden="true" />
+            <div className="action-required-copy">
+              <strong>Action required</strong>
+              <span>
+                {actionRequiredCount} demand{actionRequiredCount === 1 ? "" : "s"} need{actionRequiredCount === 1 ? "s" : ""} your input
+              </span>
+            </div>
+          </div>
+          <div className="action-required-chips">
+            {actionRequiredEntries.slice(0, 6).map((entry) => (
+              <button
+                key={`action-required-${entry.demand.demand_id}`}
+                type="button"
+                className={`action-required-chip action-required-chip-${entry.kind}${activeDemandId === entry.demand.demand_id ? " is-active" : ""}`}
+                title={entry.hint}
+                onClick={() => {
+                  setTab("Dashboard");
+                  void loadDemandDetail(entry.demand.demand_id);
+                }}
+              >
+                <span className="action-required-chip-tag">{entry.label}</span>
+                <span className="action-required-chip-title">{displayDemandTitle(entry.demand)}</span>
+              </button>
+            ))}
+            {actionRequiredEntries.length > 6 ? (
+              <span className="action-required-chip action-required-chip-more">
+                +{actionRequiredEntries.length - 6} more
+              </span>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       <main className={showSidebar ? "layout layout-sidebar" : "layout layout-board"}>
         {tab === "Dashboard" && (
@@ -1152,17 +1228,18 @@ export function App() {
                           <span className={`dashboard-lamp dashboard-lamp-${demandLampTone(demand)}`} />
                           <div className="demand-board-actions">
                             <span className="demand-board-phase">{demand.current_phase}</span>
-                            <button
-                              type="button"
-                              className="board-delete"
-                              title="Delete demand"
-                              disabled={deleteSubmittingId === demand.demand_id}
-                              onClick={() => {
-                                void deleteDemand(demand.demand_id, { animateBoardExit: true });
-                              }}
-                            >
-                              {deleteSubmittingId === demand.demand_id ? "…" : "×"}
-                            </button>
+	                            <button
+	                              type="button"
+	                              className="board-delete"
+	                              title="Cancel demand"
+	                              disabled={controlSubmittingId === demand.demand_id}
+	                              onClick={() => {
+	                                setBoardDismissingId(demand.demand_id);
+	                                void controlDemand(demand.demand_id, "cancel", "Cancelled from dashboard board");
+	                              }}
+	                            >
+	                              {controlSubmittingId === demand.demand_id ? "…" : "×"}
+	                            </button>
                           </div>
                         </div>
                         <button
@@ -1259,26 +1336,290 @@ export function App() {
                           <span>Decisions</span>
                           <strong>{openDecisionCount}</strong>
                         </div>
-                      </div>
-                      <div className="detail-hero-actions">
-                        <button
-                          type="button"
-                          className="ghost-button danger-button"
-                          disabled={deleteSubmittingId === detail.demand.demand_id}
-                          onClick={() => void deleteDemand(detail.demand.demand_id)}
-                        >
-                          {deleteSubmittingId === detail.demand.demand_id ? "Deleting..." : "Delete Demand"}
-                        </button>
-                      </div>
-                    </div>
-                  </section>
+	                      </div>
+	                      <div className="detail-hero-actions">
+	                        {detail.demand.state === "PAUSED" ? (
+	                          <button
+	                            type="button"
+	                            className="primary"
+	                            disabled={controlSubmittingId === detail.demand.demand_id}
+	                            onClick={() => void controlDemand(detail.demand.demand_id, "resume", "Resumed from demand detail")}
+	                          >
+	                            Resume
+	                          </button>
+	                        ) : (
+	                          <button
+	                            type="button"
+	                            className="ghost-button"
+	                            disabled={controlSubmittingId === detail.demand.demand_id || ["COMPLETED", "FAILED", "CANCELLED"].includes(detail.demand.state)}
+	                            onClick={() => void controlDemand(detail.demand.demand_id, "pause", "Paused from demand detail")}
+	                          >
+	                            Pause
+	                          </button>
+	                        )}
+	                        <button
+	                          type="button"
+	                          className="ghost-button interrupt-button"
+	                          title="Interrupt all currently running executions but keep the demand active"
+	                          disabled={
+	                            controlSubmittingId === detail.demand.demand_id ||
+	                            runningExecutionCount === 0 ||
+	                            ["COMPLETED", "FAILED", "CANCELLED", "PAUSED"].includes(detail.demand.state)
+	                          }
+	                          onClick={() => {
+	                            const note = window.prompt(
+	                              `Interrupt ${runningExecutionCount} running execution${runningExecutionCount === 1 ? "" : "s"}? Optionally describe what you want to redirect to (this becomes the interrupt note).`,
+	                              ""
+	                            );
+	                            if (note === null) {
+	                              return;
+	                            }
+	                            void controlDemand(detail.demand.demand_id, "interrupt", note.trim() || "Interrupted from demand detail");
+	                          }}
+	                        >
+	                          {controlSubmittingId === detail.demand.demand_id
+	                            ? "Sending..."
+	                            : `Interrupt${runningExecutionCount > 0 ? ` (${runningExecutionCount})` : ""}`}
+	                        </button>
+	                        <button
+	                          type="button"
+	                          className="ghost-button danger-button"
+	                          disabled={controlSubmittingId === detail.demand.demand_id || ["COMPLETED", "FAILED", "CANCELLED"].includes(detail.demand.state)}
+	                          onClick={() => void controlDemand(detail.demand.demand_id, "cancel", "Cancelled from demand detail", { returnToBoardAfterCancel: true })}
+	                        >
+	                          {controlSubmittingId === detail.demand.demand_id ? "Sending..." : "Cancel Demand"}
+	                        </button>
+	                      </div>
+	                    </div>
+	                  </section>
 
-                  <div className="detail-grid detail-grid-plan-only">
+	                  <section className="panel detail-section runtime-panel">
+	                    <div className="panel-heading">
+	                      <div>
+	                        <p className="eyebrow">Runtime Session</p>
+	                        <h2>{runtimeSession?.progress_note ?? "Waiting for scheduler progress"}</h2>
+	                      </div>
+	                      <span className={`status-chip status-chip-${stateTone(runtimeSession?.waiting_on ? "PENDING_DECISION" : detail.demand.state)}`}>
+	                        {runtimeSession?.waiting_on ? `waiting: ${runtimeSession.waiting_on}` : "live"}
+	                      </span>
+	                    </div>
+	                    <div className="runtime-session-grid">
+	                      <div>
+	                        <span>Phase</span>
+	                        <strong>{runtimeSession?.phase ?? detail.demand.current_phase}</strong>
+	                      </div>
+	                      <div>
+	                        <span>Frontier</span>
+	                        <strong>{runtimeSession?.frontier_subgoal_ids?.length ?? latestPlan?.frontier_subgoal_ids?.length ?? 0}</strong>
+	                      </div>
+	                      <div>
+	                        <span>Checkpoint</span>
+	                        <strong>{runtimeSession?.latest_checkpoint ?? "none"}</strong>
+	                      </div>
+	                      <div>
+	                        <span>Last Progress</span>
+	                        <strong>{runtimeSession?.last_progress_at ?? detail.demand.updated_at}</strong>
+	                      </div>
+	                    </div>
+	                  </section>
+
+	                  <section className="panel detail-section state-record-panel">
+	                    <div className="panel-heading">
+	                      <div>
+	                        <p className="eyebrow">Backend State Record</p>
+	                        <h2>Objective, Criteria, Memory</h2>
+	                      </div>
+	                      <span className="status-chip">{detail.memory.length} memory records</span>
+	                    </div>
+                      <div className="state-record-grid">
+                        <article className="state-record-card">
+                          <small>Operational Objective</small>
+                          <p className="bounded-copy">
+                            {detail.demand.operational_objective?.objective
+                              ?? detail.demand.clarified_demand
+                              ?? detail.demand.initial_input}
+                          </p>
+                        </article>
+                        <article className="state-record-card">
+                          <small>Acceptance Criteria</small>
+                          {(
+                            detail.demand.operational_objective?.acceptance_criteria?.length
+                              ? detail.demand.operational_objective.acceptance_criteria
+                              : detail.demand.acceptance_criteria
+                          ).length ? (
+                            <ul className="compact-list">
+                              {(detail.demand.operational_objective?.acceptance_criteria?.length
+                                ? detail.demand.operational_objective.acceptance_criteria
+                                : detail.demand.acceptance_criteria
+                              ).map((item) => <li key={item}>{item}</li>)}
+                            </ul>
+                          ) : <p className="bounded-copy">No acceptance criteria recorded yet.</p>}
+                        </article>
+                        <article className="state-record-card">
+                          <small>Constraints</small>
+                          {(
+                            detail.demand.operational_objective?.constraints?.length
+                              ? detail.demand.operational_objective.constraints
+                              : detail.demand.constraints
+                          ).length ? (
+                            <ul className="compact-list">
+                              {(detail.demand.operational_objective?.constraints?.length
+                                ? detail.demand.operational_objective.constraints
+                                : detail.demand.constraints
+                              ).map((item) => <li key={item}>{item}</li>)}
+                            </ul>
+                          ) : <p className="bounded-copy">No constraints recorded yet.</p>}
+                        </article>
+                        <article className="state-record-card">
+                          <small>Memory</small>
+                          {detail.memory.length ? (
+                            <div className="memory-list">
+                              {detail.memory.map((item) => (
+                                <div key={item.memory_id} className="memory-item">
+                                  <span>{item.category}</span>
+                                  <p>{item.content}</p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : <p className="bounded-copy">No memory has been written for this demand.</p>}
+                        </article>
+                      </div>
+	                  </section>
+
+	                  {(() => {
+	                    const planningRound = latestPlan?.planning_round ?? 0;
+	                    const lessonsSummary = latestPlan?.high_level_summary?.lessons_or_policy_summary?.trim();
+	                    const traceSummary = latestPlan?.high_level_summary?.episodic_trace_summary?.trim();
+	                    const lessonsMemory = detail.memory.filter((item) => item.category === "lessons_or_policy");
+	                    const traceMemory = detail.memory.filter((item) => item.category === "episodic_trace");
+	                    const blockerEvents = detail.events
+	                      .filter((event) => event.event_type === "WORKER_RESULT_RECEIVED")
+	                      .map((event) => (event.payload as WorkerResultEventPayload | undefined)?.worker_result)
+	                      .filter((result): result is NonNullable<WorkerResultEventPayload["worker_result"]> => Boolean(result?.blocker_reason?.message))
+	                      .slice(-3)
+	                      .reverse();
+	                    const hasEvolution =
+	                      planningRound > 1 ||
+	                      Boolean(lessonsSummary) ||
+	                      Boolean(traceSummary) ||
+	                      lessonsMemory.length > 0 ||
+	                      traceMemory.length > 0 ||
+	                      blockerEvents.length > 0;
+	                    if (!hasEvolution) {
+	                      return null;
+	                    }
+	                    return (
+	                      <section className="panel detail-section plan-evolution-panel">
+	                        <div className="panel-heading">
+	                          <div>
+	                            <p className="eyebrow">Plan Evolution</p>
+	                            <h2>Round {Math.max(planningRound, 1)} · refined from worker feedback</h2>
+	                          </div>
+	                          <span className={`status-chip ${planningRound > 1 ? "status-chip-info" : ""}`}>
+	                            {planningRound > 1 ? `${planningRound} planning rounds` : "initial plan"}
+	                          </span>
+	                        </div>
+	                        <p className="bounded-copy plan-evolution-intro">
+	                          The plan is not frozen up-front. Each subgoal is dispatched, observed, and the next batch is shaped by what we just learned from workers.
+	                        </p>
+	                        <div className="plan-evolution-grid">
+	                          <article className="plan-evolution-card">
+	                            <small>What we have done</small>
+	                            {traceSummary ? (
+	                              <p className="bounded-copy">{traceSummary}</p>
+	                            ) : traceMemory.length ? (
+	                              <ul className="compact-list">
+	                                {traceMemory.slice(-4).map((item) => (
+	                                  <li key={item.memory_id}>{item.content}</li>
+	                                ))}
+	                              </ul>
+	                            ) : (
+	                              <p className="bounded-copy">No execution trace recorded yet.</p>
+	                            )}
+	                          </article>
+	                          <article className="plan-evolution-card">
+	                            <small>What we learned</small>
+	                            {lessonsSummary ? (
+	                              <p className="bounded-copy">{lessonsSummary}</p>
+	                            ) : lessonsMemory.length ? (
+	                              <ul className="compact-list">
+	                                {lessonsMemory.slice(-4).map((item) => (
+	                                  <li key={item.memory_id}>{item.content}</li>
+	                                ))}
+	                              </ul>
+	                            ) : (
+	                              <p className="bounded-copy">No lessons captured yet. The next round will absorb feedback once available.</p>
+	                            )}
+	                          </article>
+	                          <article className="plan-evolution-card plan-evolution-card-wide">
+	                            <small>Recent worker feedback shaping the next subgoal</small>
+	                            {blockerEvents.length ? (
+	                              <ul className="plan-evolution-feedback">
+	                                {blockerEvents.map((result, idx) => (
+	                                  <li key={`${result.execution_id}-${idx}`}>
+	                                    <span className="pill pill-warning">{result.blocker_reason?.code ?? "feedback"}</span>
+	                                    <p className="bounded-copy">{result.blocker_reason?.message}</p>
+	                                    {result.suggested_next_step ? (
+	                                      <small>Next step suggested: {result.suggested_next_step}</small>
+	                                    ) : null}
+	                                  </li>
+	                                ))}
+	                              </ul>
+	                            ) : (
+	                              <p className="bounded-copy">No worker blockers yet — boundaries will be tightened as practical feedback arrives.</p>
+	                            )}
+	                          </article>
+	                        </div>
+	                      </section>
+	                    );
+	                  })()}
+
+	                  {openDecisions.length > 0 ? (
+	                    <section className="panel detail-section decision-panel">
+	                      <div className="panel-heading">
+	                        <div>
+	                          <p className="eyebrow">Human Decision Panel</p>
+	                          <h2>{openDecisions.length} action required</h2>
+	                        </div>
+	                        <span className="status-chip status-chip-warning">waiting on you</span>
+	                      </div>
+	                      <div className="list-stack">
+	                        {openDecisions.map((decision) => (
+	                          <article key={decision.decision_id} className="decision-card">
+	                            <div className="decision-modal-head">
+	                              <small className="pill pill-warning">{decision.reason_code ?? "DECISION"}</small>
+	                              <small>{decision.source ?? "scheduler"}</small>
+	                            </div>
+	                            <p className="bounded-copy decision-copy">{summarizeDecisionPrompt(decision.prompt)}</p>
+	                            <label className="field">
+	                              <span>Reply / extra context</span>
+	                              <textarea
+	                                value={decisionNoteFor(decision.decision_id)}
+	                                onChange={(event) => updateDecisionNote(decision.decision_id, event.target.value)}
+	                                placeholder="Provide missing context or instructions when the selected action needs it"
+	                              />
+	                            </label>
+	                            <div className="decision-modal-actions">
+	                              {renderDecisionActions(decision)}
+	                            </div>
+	                          </article>
+	                        ))}
+	                      </div>
+	                    </section>
+	                  ) : null}
+
+	                  <div className="detail-grid detail-grid-plan-only">
                     <section className="panel detail-section section-b plan-panel">
                       <div className="panel-heading">
                         <div>
                           <p className="eyebrow">Planner View</p>
-                          <h2>Plan</h2>
+                          <h2>
+                            Plan
+                            {(latestPlan?.planning_round ?? 0) > 1 ? (
+                              <span className="plan-round-badge">v{latestPlan?.planning_round}</span>
+                            ) : null}
+                          </h2>
+                          <small className="plan-subnote">Progressive: each subgoal is shaped by the previous worker feedback.</small>
                         </div>
                         <span className="status-chip">{detail.subgoals.length} subgoals</span>
                       </div>
@@ -1456,6 +1797,23 @@ export function App() {
                                                   >
                                                     {stageLabel(stage, linkedDecision)}
                                                   </button>
+                                                  {stage === "running" && execution ? (
+                                                    <button
+                                                      type="button"
+                                                      className="subgoal-interrupt-button"
+                                                      title="Interrupt this execution"
+                                                      disabled={controlSubmittingId === execution.execution_id}
+                                                      onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        if (!window.confirm(`Interrupt subgoal "${subgoal.title}"? The worker will stop and the subgoal will be marked blocked so you can redirect.`)) {
+                                                          return;
+                                                        }
+                                                        void interruptExecution(execution.execution_id, detail.demand.demand_id, `Interrupted subgoal: ${subgoal.title}`);
+                                                      }}
+                                                    >
+                                                      {controlSubmittingId === execution.execution_id ? "..." : "Interrupt"}
+                                                    </button>
+                                                  ) : null}
                                                 </div>
                                               </div>
                                           );
@@ -1522,6 +1880,23 @@ export function App() {
                                           >
                                             {stageLabel(stage, linkedDecision)}
                                           </button>
+                                          {stage === "running" && execution ? (
+                                            <button
+                                              type="button"
+                                              className="subgoal-interrupt-button"
+                                              title="Interrupt this execution"
+                                              disabled={controlSubmittingId === execution.execution_id}
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (!window.confirm(`Interrupt subgoal "${subgoal.title}"? The worker will stop and the subgoal will be marked blocked so you can redirect.`)) {
+                                                  return;
+                                                }
+                                                void interruptExecution(execution.execution_id, detail.demand.demand_id, `Interrupted subgoal: ${subgoal.title}`);
+                                              }}
+                                            >
+                                              {controlSubmittingId === execution.execution_id ? "..." : "Interrupt"}
+                                            </button>
+                                          ) : null}
                                         </div>
                                       </div>
                                     );
@@ -1725,23 +2100,16 @@ export function App() {
                               <label className="field">
                                 <span>Reply</span>
                                 <textarea
-                                  value={decisionNote}
-                                  onChange={(event) => setDecisionNote(event.target.value)}
+                                  value={decisionNoteFor(selectedDialogDecision.decision_id)}
+                                  onChange={(event) => updateDecisionNote(selectedDialogDecision.decision_id, event.target.value)}
                                   placeholder="Reply to this failed subgoal and provide the next instruction or missing context"
                                 />
-                              </label>
-                              <div className="decision-modal-actions">
-                                <button
-                                  type="button"
-                                  className="ghost-button"
-                                  disabled={decisionSubmitting === selectedDialogDecision.decision_id || !decisionNote.trim()}
-                                  onClick={() => void respondToDecision(selectedDialogDecision.decision_id, "ProvideInfo")}
-                                >
-                                  {decisionSubmitting === selectedDialogDecision.decision_id ? "Sending..." : "Reply"}
-                                </button>
-                              </div>
-                            </>
-                          ) : null}
+	                              </label>
+	                              <div className="decision-modal-actions">
+	                                {renderDecisionActions(selectedDialogDecision)}
+	                              </div>
+	                            </>
+	                          ) : null}
                         </section>
                       </div>
                     )}
@@ -1762,7 +2130,7 @@ export function App() {
               <div className="hero-metrics">
                 <div className="metric-card">
                   <span>Total</span>
-                  <strong>{workerTiles.length}</strong>
+                  <strong>{workers.length}</strong>
                 </div>
                 <button type="button" className="metric-card worker-add-card" onClick={() => setShowWorkerCreateModal(true)}>
                   <span>Add</span>
@@ -1778,6 +2146,8 @@ export function App() {
                     <small>{worker.subtitle}</small>
                   </div>
                   <strong>{worker.name}</strong>
+                  {worker.status ? <small>{worker.status}</small> : null}
+                  {worker.meta ? <p className="worker-tile-meta">{worker.meta}</p> : null}
                   <div className="worker-capabilities">
                     {worker.capabilities.map((capability) => (
                       <span key={`${worker.key}-${capability}`} className="worker-capability-chip">{capability}</span>
@@ -1844,19 +2214,108 @@ export function App() {
                 <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>Close</button>
               </div>
               <p className="bounded-copy">
-                Connect a worker runtime to the fleet.
+                Register a backend worker adapter. Dispatch, health, execution, and result collection will follow the backend adapter contract.
               </p>
               <label className="field">
-                <span>Worker Runtime</span>
+                <span>Name</span>
                 <input
-                  value={newWorkerPath}
-                  onChange={(event) => setNewWorkerPath(event.target.value)}
-                  placeholder="e.g. OpenCode runtime"
+                  value={workerDraft.name}
+                  onChange={(event) => updateWorkerDraft("name", event.target.value)}
+                  placeholder="OpenCode"
                 />
               </label>
+              <div className="worker-form-grid">
+                <label className="field">
+                  <span>Adapter</span>
+                  <select
+                    value={workerDraft.adapter_type}
+                    onChange={(event) => updateWorkerDraft("adapter_type", event.target.value as AdapterType)}
+                  >
+                    <option value="opencode">opencode</option>
+                    <option value="codex">codex</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Runtime</span>
+                  <select
+                    value={workerDraft.runtime_type}
+                    onChange={(event) => updateWorkerDraft("runtime_type", event.target.value as RuntimeType)}
+                  >
+                    <option value="local_command">local_command</option>
+                    <option value="http">http</option>
+                    <option value="websocket">websocket</option>
+                  </select>
+                </label>
+              </div>
+              <label className="field">
+                <span>Workspace Root</span>
+                <input
+                  value={workerDraft.workspace_root}
+                  onChange={(event) => updateWorkerDraft("workspace_root", event.target.value)}
+                  placeholder={settingsDraft.workspace_root || settings.workspace_root || "/path/to/workspace"}
+                />
+              </label>
+              <label className="field">
+                <span>Capabilities</span>
+                <input
+                  value={workerDraft.capabilities}
+                  onChange={(event) => updateWorkerDraft("capabilities", event.target.value)}
+                  placeholder="code_generation, file_edit, command_execution"
+                />
+              </label>
+              <div className="worker-form-grid">
+                <label className="field">
+                  <span>Max Concurrency</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={workerDraft.max_concurrency}
+                    onChange={(event) => updateWorkerDraft("max_concurrency", Number(event.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Endpoint</span>
+                  <input
+                    value={workerDraft.endpoint}
+                    onChange={(event) => updateWorkerDraft("endpoint", event.target.value)}
+                    placeholder="http/ws endpoint when used"
+                  />
+                </label>
+              </div>
+              {workerDraft.adapter_type === "codex" ? (
+                <div className="worker-form-grid">
+                  <label className="field">
+                    <span>Command</span>
+                    <input
+                      value={workerDraft.command}
+                      onChange={(event) => updateWorkerDraft("command", event.target.value)}
+                      placeholder="bash"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Args</span>
+                    <input
+                      value={workerDraft.args}
+                      onChange={(event) => updateWorkerDraft("args", event.target.value)}
+                      placeholder='["-lc", "codex ..."]'
+                    />
+                  </label>
+                </div>
+              ) : null}
               <div className="modal-actions">
                 <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>Cancel</button>
-                <button className="primary" disabled={!newWorkerPath.trim()} onClick={submitLocalWorkerPath}>Create Worker</button>
+	                <button
+                    className="primary"
+                    disabled={
+                      workerSubmitting ||
+                      !workerDraft.name.trim() ||
+                      !(workerDraft.workspace_root.trim() || settingsDraft.workspace_root || settings.workspace_root) ||
+                      parseCsv(workerDraft.capabilities).length === 0
+                    }
+                    onClick={() => void registerWorker()}
+                  >
+	                  {workerSubmitting ? "Creating..." : "Create Worker"}
+	                </button>
               </div>
             </div>
           </div>

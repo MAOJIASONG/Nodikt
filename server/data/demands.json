@@ -1,1 +1,153 @@
-{ "version": "v1", "updated_at": "1970-01-01T00:00:00.000Z", "items": [] }
+{
+  "version": "v1",
+  "updated_at": "2026-05-10T05:28:26.545Z",
+  "items": [
+    {
+      "demand_id": "demand_mozblwbtdcvpv6l7",
+      "title": "购买蝴蝶兰盆栽送妈妈生日礼物",
+      "type": "project",
+      "initial_input": "帮我买个生日礼物送给我妈，下周三生日\n",
+      "clarified_demand": "在预算1000元内购买一盆蝴蝶兰盆栽，配送至杭州市西湖区xx路xx号，希望在下周三（妈妈生日）前送达。",
+      "operational_objective": {
+        "objective": "在电商平台或花店购买一盆蝴蝶兰盆栽作为妈妈生日礼物，预算1000元，配送至杭州市西湖区xx路xx号，在下周三前送达",
+        "acceptance_criteria": [
+          "选择合适的蝴蝶兰盆栽，价格在1000元预算内",
+          "确认配送地址可送达",
+          "确保在下周三（生日）前完成配送",
+          "选择健康、品质良好的蝴蝶兰"
+        ],
+        "constraints": [
+          "预算上限1000元",
+          "配送地址：杭州市西湖区xx路xx号",
+          "配送时间：下周三前"
+        ],
+        "non_goals": [
+          "不包含额外礼品包装或贺卡（除非在预算内）",
+          "不提供代写贺卡服务"
+        ],
+        "termination_conditions": [
+          "找到合适的蝴蝶兰并完成下单支付",
+          "确认配送时间在下周三前"
+        ]
+      },
+      "state": "PENDING_DECISION",
+      "autonomy_level": "L1",
+      "acceptance_criteria": [
+        "选择合适的蝴蝶兰盆栽，价格在1000元预算内",
+        "确认配送地址可送达",
+        "确保在下周三（生日）前完成配送",
+        "选择健康、品质良好的蝴蝶兰"
+      ],
+      "constraints": [
+        "预算上限1000元",
+        "配送地址：杭州市西湖区xx路xx号",
+        "配送时间：下周三前"
+      ],
+      "progress_percent": 0,
+      "current_phase": "REVIEW",
+      "active_decision_id": "decision_mozc11n9icl6kthx",
+      "tags": [],
+      "created_at": "2026-05-10T05:16:39.787Z",
+      "updated_at": "2026-05-10T05:28:26.545Z",
+      "metadata": {
+        "runtime_session": {
+          "phase": "REVIEW",
+          "waiting_on": "user_decision",
+          "frontier_subgoal_ids": [
+            "subgoal_mozc0i7635am07t8",
+            "subgoal_mozc0i7651z7hpeh"
+          ],
+          "latest_checkpoint": "decision_mozc11n9icl6kthx",
+          "progress_note": "Decision required: BLOCKED",
+          "last_progress_at": "2026-05-10T05:28:26.545Z"
+        },
+        "clarification_question": null,
+        "conversation_history": [
+          {
+            "role": "user",
+            "content": "帮我买个生日礼物送给我妈，下周三生日\n",
+            "created_at": "2026-05-10T05:16:39.787Z"
+          },
+          {
+            "role": "assistant",
+            "content": "请问您的预算是多少？另外，您妈妈有什么兴趣爱好或特别想要的东西吗？",
+            "created_at": "2026-05-10T05:16:39.787Z"
+          },
+          {
+            "role": "user",
+            "content": "盆栽吧",
+            "created_at": "2026-05-10T05:17:38.109Z"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，您希望选择什么类型的盆栽呢？比如多肉植物、开花植物、或者绿植？另外，您的预算是多少？",
+            "created_at": "2026-05-10T05:17:38.109Z"
+          },
+          {
+            "role": "user",
+            "content": "蝴蝶兰",
+            "created_at": "2026-05-10T05:17:59.149Z"
+          },
+          {
+            "role": "assistant",
+            "content": "请问您的预算是多少？另外，需要配送到哪里呢？",
+            "created_at": "2026-05-10T05:17:59.149Z"
+          },
+          {
+            "role": "user",
+            "content": "杭州市西湖区 xx 路 xx 号",
+            "created_at": "2026-05-10T05:18:57.500Z"
+          },
+          {
+            "role": "assistant",
+            "content": "请问您的预算是多少？",
+            "created_at": "2026-05-10T05:18:57.500Z"
+          },
+          {
+            "role": "user",
+            "content": "1000",
+            "created_at": "2026-05-10T05:19:41.772Z"
+          },
+          {
+            "role": "assistant",
+            "content": "用户希望购买蝴蝶兰盆栽作为妈妈生日礼物，预算1000元，配送至杭州市西湖区xx路xx号，希望在下周三（生日）前送达。",
+            "created_at": "2026-05-10T05:19:41.772Z"
+          }
+        ],
+        "latest_plan": {
+          "planning_round": 12,
+          "dependency_graph_snapshot": {
+            "frontier": [
+              "subgoal_mozc0i7635am07t8",
+              "subgoal_mozc0i7651z7hpeh"
+            ],
+            "planner_reason": "replan_after_decision"
+          },
+          "frontier_subgoal_ids": [
+            "subgoal_mozc0i7635am07t8",
+            "subgoal_mozc0i7651z7hpeh"
+          ],
+          "overall_plan_outline": [
+            {
+              "plan_item_id": "plan_12_1",
+              "title": "购买蝴蝶兰盆栽作为妈妈生日礼物",
+              "objective": "在1000元预算内购买蝴蝶兰盆栽，配送至杭州市西湖区，确保下周三（妈妈生日）前送达",
+              "execution_mode": "sequential",
+              "rationale": "购买蝴蝶兰盆栽是非编码的购物任务，需要依次完成搜索、筛选、下单和确认配送等步骤",
+              "frontier_subgoal_ids": [
+                "subgoal_mozc0i7635am07t8",
+                "subgoal_mozc0i7651z7hpeh"
+              ]
+            }
+          ],
+          "high_level_summary": {
+            "mission_state_summary": "用户需要在预算1000元内购买蝴蝶兰盆栽作为妈妈生日礼物，配送至杭州市西湖区，要求在下周三前送达。当前处于规划阶段，需要制定购物计划。",
+            "episodic_trace_summary": "这是第12轮规划，用户需求为购买蝴蝶兰盆栽送妈妈作为生日礼物，预算1000元，配送至杭州西湖区，需在下周三前送达。",
+            "lessons_or_policy_summary": "该任务为非编码的购物任务，需要映射到规划框架中。购物任务与编码任务的规划方式不同，但可以通过定义搜索、筛选、下单等子目标来适配框架。"
+          },
+          "reason": "replan_after_decision"
+        }
+      }
+    }
+  ]
+}

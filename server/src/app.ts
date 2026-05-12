@@ -36,6 +36,8 @@ export async function createApp() {
   const wss = new WebSocketServer({ noServer: true });
   const wsBroadcaster = new WsBroadcaster(wss, repositories);
   const opsMonitor = new OpsMonitor(repositories, adapterRegistry);
+  const codexAdapter = new CodexAdapter();
+  const opencodeAdapter = new OpenCodeAdapter();
 
   const handlers = createHandlers();
   const eventBus = new EventBus(handlers, repositories, (publish) => ({
@@ -58,7 +60,10 @@ export async function createApp() {
 
   app.use(cors());
   app.use(express.json());
-  app.use("/api", createApiRouter(repositories, eventBus, adapterRegistry));
+  app.use("/api", createApiRouter(repositories, eventBus, adapterRegistry, {
+    codex: codexAdapter,
+    opencode: opencodeAdapter
+  }));
 
   if (hasWebDist) {
     app.use(express.static(webDistDir));
@@ -88,9 +93,6 @@ export async function createApp() {
       wss.emit("connection", client, request);
     });
   });
-
-  const codexAdapter = new CodexAdapter();
-  const opencodeAdapter = new OpenCodeAdapter();
 
   return {
     app,

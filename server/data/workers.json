@@ -1,5 +1,38 @@
 {
   "version": "v1",
-  "updated_at": "1970-01-01T00:00:00.000Z",
-  "items": []
+  "updated_at": "2026-05-10T05:28:11.489Z",
+  "items": [
+    {
+      "worker_id": "worker_opencode_local",
+      "name": "OpenCode Local",
+      "adapter_type": "opencode",
+      "runtime_type": "local_command",
+      "status": "idle",
+      "max_concurrency": 3,
+      "capabilities": [
+        "code_generation",
+        "file_edit",
+        "command_execution"
+      ],
+      "available_skills": [],
+      "install_policy": "allowed_with_review",
+      "config": {
+        "workspace_root": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/workspace",
+        "command": "bash",
+        "args": [
+          "/volume/coder/users/yzli02/swwu/jincheng/opencode/opencode_run.sh"
+        ],
+        "env": {
+          "HOME": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/.opencode-runtime",
+          "PATH": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/opencode/bin:/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/node_modules/.bin:/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/node_modules/.bin:/volume/coder/users/yzli02/swwu/jincheng/node_modules/.bin:/volume/coder/users/yzli02/swwu/node_modules/.bin:/volume/coder/users/yzli02/node_modules/.bin:/volume/coder/users/node_modules/.bin:/volume/coder/node_modules/.bin:/volume/node_modules/.bin:/node_modules/.bin:/root/.local/share/fnm/node-versions/v22.22.1/installation/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/root/.local/bin:/root/.local/state/fnm_multishells/2099112_1778389153878/bin:/root/.local/share/fnm:/root/.local/state/fnm_multishells/2099111_1778389153862/bin:/root/.local/share/fnm:/root/.cursor-server/bin/linux-x64/3e548838cf824b70851dd3ef27d0c6aae371b3f0/bin/remote-cli:/volume/coder/users/yzli02/swwu/jincheng/miniconda3/envs/taco/bin:/miniconda3/condabin:/root/.local/bin:/root/.local/state/fnm_multishells/1740515_1778376388573/bin:/root/.local/share/fnm:/root/.local/state/fnm_multishells/1740514_1778376388557/bin:/root/.local/share/fnm:/usr/local/nvm/versions/node/v16.20.2/bin:/usr/local/lib/python3.10/dist-packages/torch_tensorrt/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/tensorrt/bin:/miniconda3/bin:/root/.cursor-server/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/scripts/noConfigScripts"
+        }
+      },
+      "current_execution_ids": [],
+      "last_seen_at": null,
+      "last_error": "spawn /volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/opencode/bin/opencode ENOENT",
+      "is_enabled": true,
+      "created_at": "2026-05-03T02:49:05.992Z",
+      "updated_at": "2026-05-10T05:28:11.487Z"
+    }
+  ]
 }

@@ -1,37 +1,37 @@
 {
   "version": "v1",
-  "updated_at": "1970-01-01T00:00:00.000Z",
+  "updated_at": "2026-05-10T05:16:36.472Z",
   "models": {
     "primary": {
       "provider": "openai-compatible",
-      "model": "",
-      "base_url": "",
-      "api_key": "",
-      "enabled": false
+      "model": "MiniMax-M2.5",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key": "sk-sp-556a1ff3fb1747a59fdc5e487a506c17",
+      "enabled": true
     },
     "planner": {
       "provider": "openai-compatible",
-      "model": "",
-      "base_url": "",
-      "api_key": "",
-      "enabled": false
+      "model": "MiniMax-M2.5",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key": "sk-sp-556a1ff3fb1747a59fdc5e487a506c17",
+      "enabled": true
     },
     "verifier": {
       "provider": "openai-compatible",
-      "model": "",
-      "base_url": "",
-      "api_key": "",
-      "enabled": false
+      "model": "MiniMax-M2.5",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key": "sk-sp-556a1ff3fb1747a59fdc5e487a506c17",
+      "enabled": true
     },
     "ops_backup": {
       "provider": "openai-compatible",
-      "model": "",
-      "base_url": "",
-      "api_key": "",
-      "enabled": false
+      "model": "MiniMax-M2.5",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key": "sk-sp-556a1ff3fb1747a59fdc5e487a506c17",
+      "enabled": true
     }
   },
-  "workspace_root": "./workspace",
+  "workspace_root": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/workspace",
   "runtime": {
     "heartbeat_interval_seconds": 30,
     "execution_timeout_seconds": 600,
