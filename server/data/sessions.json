@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "updated_at": "2026-05-12T07:11:54.291Z",
+  "items": [
+    {
+      "session_id": "session_demand_mp2ajnl9qm19hh8r",
+      "demand_id": "demand_mp2ajnl9qm19hh8r",
+      "phase": "REVIEW",
+      "current_summary": "Decision required: BLOCKED",
+      "frontier_subgoal_ids": [
+        "subgoal_mp2alimk3albylbo"
+      ],
+      "waiting_on": "user_decision",
+      "latest_checkpoint": "decision_mp2alsvrh29zzl3d",
+      "last_progress_at": "2026-05-12T07:11:54.283Z",
+      "status": "PENDING_DECISION",
+      "created_at": "2026-05-12T07:10:14.075Z",
+      "updated_at": "2026-05-12T07:11:54.283Z"
+    }
+  ]
+}
