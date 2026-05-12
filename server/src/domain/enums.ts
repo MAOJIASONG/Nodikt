@@ -1,3 +1,19 @@
+/**
+ * 文件名称：enums.ts
+ * 文件作用：领域枚举定义，集中维护需求、子目标、执行、决策、工作器和事件的状态常量。
+ *
+ * 主要职责：
+ * 1. 定义核心状态机使用的所有枚举值。
+ * 2. 为事件调度、仓储校验和接口响应提供统一字面量来源。
+ * 3. 降低跨模块硬编码状态字符串的风险。
+ *
+ * 依赖模块：
+ * - 无外部业务依赖。
+ *
+ * 注意事项：
+ * - 修改枚举值会影响数据文件、事件处理器和前端展示，需要谨慎迁移。
+ * - 新增事件类型时，应同步补充事件载荷类型与校验规则。
+ */
 export enum DemandState {
   PENDING_ALIGNMENT = "PENDING_ALIGNMENT",
   READY = "READY",
@@ -121,6 +137,10 @@ export enum EventType {
   DEMAND_RESUMED = "DEMAND_RESUMED",
   DEMAND_CANCELLED = "DEMAND_CANCELLED",
   EXECUTION_STOP_REQUESTED = "EXECUTION_STOP_REQUESTED",
+  EXECUTION_TIMEOUT_DETECTED = "EXECUTION_TIMEOUT_DETECTED",
+  WORKER_HEALTH_CHECKED = "WORKER_HEALTH_CHECKED",
+  OPS_RECOVERY_ATTEMPTED = "OPS_RECOVERY_ATTEMPTED",
+  OPS_RECOVERY_FAILED = "OPS_RECOVERY_FAILED",
   OPS_ALERT = "OPS_ALERT",
   MISSION_COMPLETED = "MISSION_COMPLETED"
 }
