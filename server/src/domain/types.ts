@@ -434,7 +434,7 @@ export type EventPayloadMap = {
   [EventType.DEMAND_PAUSED]: DemandControlPayload;
   [EventType.DEMAND_RESUMED]: DemandControlPayload;
   [EventType.DEMAND_CANCELLED]: DemandControlPayload;
-  [EventType.EXECUTION_STOP_REQUESTED]: { reason?: string };
+  [EventType.EXECUTION_STOP_REQUESTED]: { reason?: string; note?: string };
   [EventType.OPS_ALERT]: OpsAlertPayload;
   [EventType.MISSION_COMPLETED]: MissionCompletedPayload;
 };
