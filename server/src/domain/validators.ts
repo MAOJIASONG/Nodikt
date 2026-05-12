@@ -1,3 +1,20 @@
+/**
+ * 文件名称：validators.ts
+ * 文件作用：领域数据校验模块，使用 Zod 定义持久化数据和接口数据的运行时校验规则。
+ *
+ * 主要职责：
+ * 1. 为各类领域实体提供 schema 校验。
+ * 2. 定义集合文件结构，保护 JSON 数据读写边界。
+ * 3. 将 TypeScript 类型约束补充为运行时数据约束。
+ *
+ * 依赖模块：
+ * - zod：运行时 schema 校验库。
+ * - domain/enums：领域枚举值。
+ *
+ * 注意事项：
+ * - 修改 types.ts 中实体结构时，应同步调整对应 schema。
+ * - 对外部输入和持久化数据读取应优先经过本模块校验。
+ */
 import { z } from "zod";
 
 import {
@@ -73,6 +90,20 @@ export const demandSchema = z.object({
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
   metadata: z.record(z.unknown()).optional()
+});
+
+export const sessionSchema = z.object({
+  session_id: z.string().min(1),
+  demand_id: z.string().min(1),
+  phase: z.nativeEnum(DemandPhase),
+  current_summary: z.string(),
+  frontier_subgoal_ids: z.array(z.string()),
+  waiting_on: z.string().nullable(),
+  latest_checkpoint: z.string().nullable(),
+  last_progress_at: z.string().datetime(),
+  status: z.nativeEnum(DemandState),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime()
 });
 
 export const executionSchema = z.object({
@@ -230,6 +261,12 @@ export const subgoalsCollectionSchema = z.object({
   version: z.literal("v1"),
   updated_at: z.string().datetime(),
   items: z.array(subgoalContractSchema)
+});
+
+export const sessionsCollectionSchema = z.object({
+  version: z.literal("v1"),
+  updated_at: z.string().datetime(),
+  items: z.array(sessionSchema)
 });
 
 export const executionsCollectionSchema = z.object({
