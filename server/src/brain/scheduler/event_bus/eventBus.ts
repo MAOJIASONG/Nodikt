@@ -19,8 +19,13 @@
  */
 import { EventType, SchedulerEvent } from "../../../domain/index.js";
 import { RepositoryBundle } from "../../store/repositories/index.js";
-import { deriveSessionFromDemand } from "../handlers/sessionState.js";
+import { applySessionEvent } from "../session/sessionReducer.js";
 import { HandlerContext, HandlerMap } from "./types.js";
+
+const TRANSIENT_EVENT_TYPES = new Set<EventType>([
+  EventType.WORKER_HEARTBEAT_RECEIVED,
+  EventType.WORKER_HEALTH_CHECKED
+]);
 
 export class EventBus {
   constructor(
@@ -28,17 +33,6 @@ export class EventBus {
     private readonly repositories: RepositoryBundle,
     private readonly contextFactory: (publish: (event: SchedulerEvent<unknown>) => Promise<void>) => Omit<HandlerContext, "publish">
   ) {}
-
-  private async syncSessionSnapshot(demandId?: string | null): Promise<void> {
-    if (!demandId) {
-      return;
-    }
-    const demand = await this.repositories.demands.getById(demandId);
-    if (!demand) {
-      return;
-    }
-    await this.repositories.sessions.upsert(deriveSessionFromDemand(demand));
-  }
 
   /**
    * 函数作用：发布调度事件并触发对应处理器。
@@ -53,11 +47,13 @@ export class EventBus {
    * - 本函数会先保存事件，再执行处理器；处理器可继续发布后续事件。
    */
   async publish(event: SchedulerEvent<unknown>): Promise<void> {
-    await this.repositories.events.upsert(event as SchedulerEvent<Record<string, unknown>>);
+    if (!TRANSIENT_EVENT_TYPES.has(event.event_type as EventType)) {
+      await this.repositories.events.upsert(event as SchedulerEvent<Record<string, unknown>>);
+    }
     const handler = this.handlers[event.event_type as EventType];
     if (!handler) {
       const ctx = this.contextFactory(this.publish.bind(this));
-      await this.syncSessionSnapshot(event.demand_id);
+      await applySessionEvent(event, this.repositories);
       await ctx.wsBroadcaster.broadcastEvent(event);
       return;
     }
@@ -68,7 +64,7 @@ export class EventBus {
     };
 
     const result = await handler(event, ctx);
-    await this.syncSessionSnapshot(event.demand_id);
+    await applySessionEvent(event, this.repositories);
     await ctx.wsBroadcaster.broadcastEvent(event);
 
     if (result.events) {

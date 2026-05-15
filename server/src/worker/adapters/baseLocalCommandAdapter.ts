@@ -18,7 +18,7 @@
  * - 进程取消和结果归档会影响调度状态推进，需要保持返回结构稳定。
  */
 import { spawn, ChildProcessByStdio } from "child_process";
-import { readdir, stat } from "fs/promises";
+import { mkdir, readdir, stat } from "fs/promises";
 import { Readable } from "stream";
 
 import {
@@ -43,6 +43,7 @@ interface RuntimeRecord {
   exitCode: number | null;
   finishedAt: number | null;
   errorMessage: string | null;
+  resultCollectedAt: number | null;
 }
 
 export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
@@ -136,6 +137,7 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
     }
 
     const { command, args, env, cwd } = this.resolveCommand(worker, packet);
+    await mkdir(cwd, { recursive: true });
     const child = spawn(command, args, {
       cwd,
       env: {
@@ -154,7 +156,8 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
       stderr: [],
       exitCode: null,
       finishedAt: null,
-      errorMessage: null
+      errorMessage: null,
+      resultCollectedAt: null
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
@@ -242,6 +245,11 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
     if (!runtime || runtime.finishedAt === null) {
       return null;
     }
+    if (runtime.resultCollectedAt !== null) {
+      return null;
+    }
+
+    runtime.resultCollectedAt = Date.now();
     const producedArtifacts = runtime.exitCode === 0 && await this.hasRecentWorkspaceChanges(runtime.cwd, runtime.startedAt)
       ? [
           {

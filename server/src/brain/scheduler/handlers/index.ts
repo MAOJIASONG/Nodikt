@@ -50,6 +50,7 @@ import {
 import {
   onDecisionRequestCreated,
   onDecisionResponseReceived,
+  onSubgoalRetryRequested,
   onVerificationCompleted
 } from "./eventHandlers/reviewHandlers.js";
 
@@ -80,6 +81,7 @@ export function createHandlers(): HandlerMap {
     [EventType.WORKER_HEARTBEAT_RECEIVED]: onWorkerHeartbeat,
     [EventType.WORKER_RESULT_RECEIVED]: onWorkerResult,
     [EventType.VERIFICATION_COMPLETED]: onVerificationCompleted,
+    [EventType.SUBGOAL_RETRY_REQUESTED]: onSubgoalRetryRequested,
     [EventType.DECISION_REQUEST_CREATED]: onDecisionRequestCreated,
     [EventType.DECISION_RESPONSE_RECEIVED]: onDecisionResponseReceived,
     [EventType.DEMAND_PAUSED]: onDemandPaused,

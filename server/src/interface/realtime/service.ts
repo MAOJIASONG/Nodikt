@@ -20,7 +20,7 @@ import { WebSocketServer } from "ws";
 
 import { DemandView, SchedulerEvent } from "../../domain/index.js";
 import { RepositoryBundle } from "../../brain/store/repositories/index.js";
-import { deriveSessionFromDemand } from "../../brain/scheduler/handlers/sessionState.js";
+import { deriveSessionFromDemand, withRuntimeSessionMetadata } from "../../brain/scheduler/handlers/sessionState.js";
 
 export class WsBroadcaster {
   constructor(
@@ -81,15 +81,18 @@ export class WsBroadcaster {
     ]);
 
     const demandSession = session ?? deriveSessionFromDemand(demand);
+    const demandEvents = events
+      .filter((item) => item.demand_id === demandId)
+      .slice(-100);
 
     return {
-      demand,
+      demand: withRuntimeSessionMetadata(demand, demandSession),
       session: demandSession,
       subgoals: subgoals.filter((item) => item.demand_id === demandId),
       executions: executions.filter((item) => item.demand_id === demandId),
       decisions: decisions.filter((item) => item.demand_id === demandId),
       memory: memory.filter((item) => item.demand_id === demandId),
-      events: events.filter((item) => item.demand_id === demandId)
+      events: demandEvents
     };
   }
 

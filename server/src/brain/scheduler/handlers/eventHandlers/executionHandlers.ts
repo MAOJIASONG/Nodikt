@@ -44,6 +44,7 @@ import {
 } from "../executionRuntime.js";
 
 const logger = createLogger("handlers:execution");
+const verifyingWorkerResultExecutions = new Set<string>();
 
 /**
  * 函数作用：处理执行创建事件并选择可用工作器。
@@ -231,11 +232,21 @@ export async function onWorkerResult(event: SchedulerEvent, ctx: HandlerContext)
     logger.warn({ executionId: event.execution_id, subgoalId: event.subgoal_id }, "忽略工作器结果，因为未找到执行或子目标");
     return {};
   }
+  if (verifyingWorkerResultExecutions.has(execution.execution_id)) {
+    logger.debug({ executionId: execution.execution_id }, "Ignoring duplicate worker result while verification is in flight");
+    return {};
+  }
+  if (execution.state === ExecutionState.VERIFYING) {
+    logger.debug({ executionId: execution.execution_id }, "Ignoring duplicate worker result for execution already verifying");
+    return {};
+  }
   if (!ACTIVE_EXECUTION_STATES.has(execution.state)) {
     logger.debug({ executionId: execution.execution_id, state: execution.state }, "忽略非活跃执行的工作器结果");
     return {};
   }
   const payload = event.payload as { worker_result: any };
+  verifyingWorkerResultExecutions.add(execution.execution_id);
+  try {
   logger.info({ executionId: execution.execution_id, subgoalId: subgoal.subgoal_id, workerStatus: payload.worker_result.worker_status }, "收到工作器结果，开始验证");
   const resultExecution = execution.state === ExecutionState.QUEUED
     ? transitionExecution(execution, {
@@ -257,7 +268,8 @@ export async function onWorkerResult(event: SchedulerEvent, ctx: HandlerContext)
   }));
   await ctx.repositories.subgoals.upsert(transitionSubgoal(resultSubgoal, { state: SubgoalState.VERIFYING }));
 
-  const verification = ctx.verifier.verify(subgoal.subgoal_id, payload.worker_result);
+  const settings = await ctx.repositories.loadSettings();
+  const verification = await ctx.verifier.verify(subgoal.subgoal_id, subgoal, payload.worker_result, settings);
   return {
     events: [
       createEvent(
@@ -272,6 +284,9 @@ export async function onWorkerResult(event: SchedulerEvent, ctx: HandlerContext)
       )
     ]
   };
+  } finally {
+    verifyingWorkerResultExecutions.delete(execution.execution_id);
+  }
 }
 
 /**

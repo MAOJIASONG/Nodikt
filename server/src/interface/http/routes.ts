@@ -23,7 +23,7 @@ import { createEvent, createId, DecisionAction, DemandState, EventType, Executio
 import { EventBus } from "../../brain/scheduler/event_bus/index.js";
 import { RepositoryBundle } from "../../brain/store/repositories/index.js";
 import { AdapterRegistry } from "../../worker/adapters/registry.js";
-import { deriveSessionFromDemand } from "../../brain/scheduler/handlers/sessionState.js";
+import { deriveSessionFromDemand, withRuntimeSessionMetadata } from "../../brain/scheduler/handlers/sessionState.js";
 
 /**
  * 函数作用：创建后端 HTTP API 路由。
@@ -78,7 +78,10 @@ export function createApiRouter(
       );
 
       const demand = await repositories.demands.getById(demandId);
-      res.status(201).json(demand);
+      const session = demand
+        ? await repositories.sessions.getById(`session_${demand.demand_id}`)
+        : null;
+      res.status(201).json(demand && session ? withRuntimeSessionMetadata(demand, session) : demand);
     } catch (error) {
       next(error);
     }
@@ -86,16 +89,19 @@ export function createApiRouter(
 
   router.get("/demands", async (_req, res, next) => {
     try {
-      const [demands, subgoals, executions] = await Promise.all([
+      const [demands, sessions, subgoals, executions] = await Promise.all([
         repositories.demands.list(),
+        repositories.sessions.list(),
         repositories.subgoals.list(),
         repositories.executions.list()
       ]);
+      const sessionsByDemandId = new Map(sessions.map((session) => [session.demand_id, session]));
 
       res.json(
         demands
           .filter((demand) => demand.state !== DemandState.CANCELLED)
           .map((demand) => {
+            const session = sessionsByDemandId.get(demand.demand_id) ?? deriveSessionFromDemand(demand);
             const demandSubgoals = subgoals
               .filter((item) => item.demand_id === demand.demand_id)
               .sort((left, right) => {
@@ -117,7 +123,7 @@ export function createApiRouter(
             );
 
             return {
-              ...demand,
+              ...withRuntimeSessionMetadata(demand, session),
               dashboard_summary: {
                 current_subgoal_title: demandSubgoals[0]?.title ?? null,
                 worker_count: activeWorkerIds.size
@@ -147,9 +153,11 @@ export function createApiRouter(
         repositories.events.list()
       ]);
 
+      const demandSession = session ?? deriveSessionFromDemand(demand);
+
       res.json({
-        demand,
-        session: session ?? deriveSessionFromDemand(demand),
+        demand: withRuntimeSessionMetadata(demand, demandSession),
+        session: demandSession,
         subgoals: subgoals.filter((item) => item.demand_id === demand.demand_id),
         executions: executions.filter((item) => item.demand_id === demand.demand_id),
         decisions: decisions.filter((item) => item.demand_id === demand.demand_id),
@@ -280,6 +288,35 @@ export function createApiRouter(
             demand_id: decision.demand_id,
             subgoal_id: decision.subgoal_id ?? null,
             execution_id: decision.execution_id ?? null
+          }
+        )
+      );
+      res.status(202).json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/executions/:id/interrupt", async (req, res, next) => {
+    try {
+      const execution = await repositories.executions.getById(req.params.id);
+      if (!execution) {
+        res.status(404).json({ error: "Execution not found" });
+        return;
+      }
+      if (![ExecutionState.RUNNING, ExecutionState.QUEUED].includes(execution.state)) {
+        res.status(409).json({ error: `Execution is not active (state: ${execution.state})` });
+        return;
+      }
+      await eventBus.publish(
+        createEvent(
+          EventType.EXECUTION_STOP_REQUESTED,
+          { reason: "user_interrupted", note: req.body.note ?? null },
+          {
+            demand_id: execution.demand_id,
+            subgoal_id: execution.subgoal_id,
+            execution_id: execution.execution_id,
+            worker_id: execution.worker_id
           }
         )
       );

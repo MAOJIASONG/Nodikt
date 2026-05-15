@@ -34,19 +34,18 @@ export const logger = pino({
             options: { destination: 1 }
           }
         : {
-            target: "pino-pretty",
+            target: path.join(__dirname, "logTransport.js"),
             level: logLevel,
-            options: {
-              colorize: true,
-              translateTime: "yyyy-mm-dd HH:MM:ss.l"
-            }
+            options: {}
           },
       {
-        target: "pino/file",
+        target: path.join(__dirname, "logTransport.js"),
         level: logLevel,
         options: {
           destination: logFile,
-          mkdir: true
+          mkdir: true,
+          colorize: false,
+          blankLines: true
         }
       }
     ]

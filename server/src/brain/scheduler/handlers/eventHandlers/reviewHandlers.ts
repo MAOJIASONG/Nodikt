@@ -22,9 +22,11 @@
 import {
   createEvent,
   DecisionAction,
+  DecisionReasonCode,
   DemandPhase,
   DemandState,
   EventType,
+  ExecutionState,
   HandlerResult,
   SchedulerEvent,
   SubgoalState,
@@ -37,12 +39,16 @@ import {
   EXECUTION_TRANSITIONS,
   SUBGOAL_TRANSITIONS,
   assertTransition,
-  transitionDemand
+  isTerminalDemand,
+  transitionDemand,
+  transitionSubgoal
 } from "../stateMachine.js";
 import {
   appendExecutionGuidance,
+  appendRetryHistory,
   classifyDecisionReplyIntent,
-  patchRuntimeSession
+  patchRuntimeSession,
+  readRetryHistory
 } from "../sessionState.js";
 import { collectUnlockedPlannedSubgoals } from "../planProgress.js";
 import {
@@ -53,6 +59,84 @@ import {
 import { collectEventRefs } from "./shared.js";
 
 const logger = createLogger("handlers:review");
+const reconcilingVerificationExecutions = new Set<string>();
+
+function buildRetryFailureContext(input: {
+  decisionReasonCode?: unknown;
+  decisionSource?: unknown;
+  workerResult?: {
+    worker_status?: unknown;
+    blocker_reason?: unknown;
+    claimed_outcome?: unknown;
+    compressed_history?: unknown;
+    suggested_next_step?: unknown;
+  };
+  verification?: {
+    verified_status?: unknown;
+    notes?: unknown;
+  };
+}): Record<string, unknown> {
+  return {
+    decision_reason_code: input.decisionReasonCode,
+    decision_source: input.decisionSource,
+    worker_status: input.workerResult?.worker_status,
+    blocker_reason: input.workerResult?.blocker_reason,
+    claimed_outcome: input.workerResult?.claimed_outcome,
+    compressed_history: input.workerResult?.compressed_history,
+    suggested_next_step: input.workerResult?.suggested_next_step,
+    verification_status: input.verification?.verified_status,
+    verification_notes: input.verification?.notes
+  };
+}
+
+function buildAutomaticRetryMetadata(input: {
+  metadata?: Record<string, unknown>;
+  decisionReasonCode: unknown;
+  source: "worker" | "verifier";
+  retryAttempt: number;
+  maxRetryCount: number;
+  timestamp: string;
+  subgoalId: string;
+  executionId: string;
+  workerResult: any;
+  verification: any;
+}): Record<string, unknown> {
+  const failureContext = buildRetryFailureContext({
+    decisionReasonCode: input.decisionReasonCode,
+    decisionSource: input.source,
+    workerResult: input.workerResult,
+    verification: input.verification
+  });
+
+  // The next worker attempt consumes this guidance; retry is treated as
+  // another attempt for the same subgoal, not a demand-level replan.
+  const metadataWithGuidance = appendExecutionGuidance(input.metadata, {
+    source: "retry",
+    kind: "automatic_subgoal_retry",
+    note: [
+      `Automatic retry triggered by scheduler. Retry attempt ${input.retryAttempt} of ${input.maxRetryCount}.`,
+      "Use the previous failure, verification notes, worker result, and accepted progress as the basis for the next attempt.",
+      "Do not simply repeat the failed path unless the failure context indicates a transient runtime issue."
+    ].join("\n"),
+    created_at: input.timestamp,
+    execution_id: input.executionId,
+    subgoal_id: input.subgoalId,
+    retry_attempt: input.retryAttempt,
+    max_retry_count: input.maxRetryCount,
+    failure_context: failureContext
+  });
+
+  // Retry history is the durable counter behind settings.runtime.max_retry_count.
+  return appendRetryHistory(metadataWithGuidance, {
+    execution_id: input.executionId,
+    subgoal_id: input.subgoalId,
+    source: "scheduler_auto_retry",
+    note: String(input.decisionReasonCode ?? "retry_after_failed_verification"),
+    created_at: input.timestamp,
+    retry_attempt: input.retryAttempt,
+    max_retry_count: input.maxRetryCount
+  });
+}
 
 /**
  * 函数作用：处理验证完成事件并根据归并结果推进调度。
@@ -76,11 +160,25 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     logger.warn({ demandId: event.demand_id, subgoalId: event.subgoal_id, executionId: event.execution_id }, "忽略验证完成事件，因为必要记录未找到");
     return {};
   }
+  if (reconcilingVerificationExecutions.has(execution.execution_id)) {
+    logger.debug({ demandId: demand.demand_id, executionId: execution.execution_id }, "Ignoring duplicate verification completion while reconciliation is in flight");
+    return {};
+  }
+  if (execution.state !== ExecutionState.VERIFYING) {
+    logger.debug({ demandId: demand.demand_id, executionId: execution.execution_id, state: execution.state }, "Ignoring duplicate verification completion for execution that is no longer verifying");
+    return {};
+  }
+  reconcilingVerificationExecutions.add(execution.execution_id);
+  try {
   const workerResult = (workerResultEvent.payload as { worker_result: any }).worker_result;
   const verification = (event.payload as { verification_result: any }).verification_result;
   logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, verificationStatus: verification.verified_status }, "正在归并验证结果");
   const outcome = ctx.reconciliation.reconcile({ demand, subgoal, execution, workerResult, verification });
   const projectedSubgoals = demandSubgoals.map((item) => item.subgoal_id === outcome.subgoal.subgoal_id ? outcome.subgoal : item);
+  let retryRequest: {
+    retryAttempt: number;
+    maxRetryCount: number;
+  } | null = null;
 
   if (verification.verified_status === "VERIFIED_DONE") {
     const unfinishedStates = new Set([
@@ -124,11 +222,63 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   }
 
   if (outcome.decisionReasonCode) {
-    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, reasonCode: outcome.decisionReasonCode }, "验证结果需要用户决策");
-    outcome.demand.state = DemandState.PENDING_DECISION;
-    outcome.demand.current_phase = DemandPhase.REVIEW;
-    outcome.missionCompleted = false;
-    outcome.replanRequested = false;
+    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, reasonCode: outcome.decisionReasonCode }, "Verification result needs recovery handling");
+    const settings = await ctx.repositories.loadSettings();
+    const retryHistory = readRetryHistory(demand.metadata)
+      .filter((item) => item.subgoal_id === subgoal.subgoal_id);
+    const retryBudgetAvailable = retryHistory.length < settings.runtime.max_retry_count;
+
+    // Failed verification first becomes an unattended retry for this same
+    // subgoal while budget remains; human decision is the fallback.
+    if (retryBudgetAvailable) {
+      const retryAttempt = retryHistory.length + 1;
+      const retryTimestamp = nowIso();
+      logger.info({
+        demandId: demand.demand_id,
+        subgoalId: subgoal.subgoal_id,
+        executionId: execution.execution_id,
+        reasonCode: outcome.decisionReasonCode,
+        retryAttempt,
+        maxRetryCount: settings.runtime.max_retry_count
+      }, "Verification failure is being retried automatically for the same subgoal");
+
+      outcome.demand.state = DemandState.ACTIVE;
+      outcome.demand.current_phase = DemandPhase.REVIEW;
+      outcome.demand.active_decision_id = null;
+      outcome.demand.metadata = buildAutomaticRetryMetadata({
+        metadata: demand.metadata,
+        decisionReasonCode: outcome.decisionReasonCode,
+        source: verification.verified_status === "UNVERIFIABLE" ? "verifier" : "worker",
+        retryAttempt,
+        maxRetryCount: settings.runtime.max_retry_count,
+        timestamp: retryTimestamp,
+        subgoalId: subgoal.subgoal_id,
+        executionId: execution.execution_id,
+        workerResult,
+        verification
+      });
+      outcome.subgoal.state = SubgoalState.READY;
+      outcome.missionCompleted = false;
+      outcome.replanRequested = false;
+      outcome.decisionReasonCode = undefined;
+      outcome.decisionPrompt = undefined;
+      retryRequest = {
+        retryAttempt,
+        maxRetryCount: settings.runtime.max_retry_count
+      };
+    } else {
+      logger.info({
+        demandId: demand.demand_id,
+        subgoalId: subgoal.subgoal_id,
+        reasonCode: outcome.decisionReasonCode,
+        retryCount: retryHistory.length,
+        maxRetryCount: settings.runtime.max_retry_count
+      }, "Verification failure exhausted automatic retry budget and needs user decision");
+      outcome.demand.state = DemandState.PENDING_DECISION;
+      outcome.demand.current_phase = DemandPhase.REVIEW;
+      outcome.missionCompleted = false;
+      outcome.replanRequested = false;
+    }
   }
 
   assertTransition("demand", demand.state, outcome.demand.state, DEMAND_TRANSITIONS);
@@ -137,7 +287,7 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   const reconciliationTimestamp = nowIso();
   const waitingOn = outcome.decisionReasonCode
     ? "user_decision"
-    : outcome.replanRequested || outcome.missionCompleted
+    : outcome.replanRequested || outcome.missionCompleted || retryRequest
       ? null
       : "scheduler";
   await ctx.repositories.demands.upsert({
@@ -183,7 +333,9 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
         verification_status: verification.verified_status,
         decision_id: null,
         mission_completed: outcome.missionCompleted,
-        replan_requested: outcome.replanRequested
+        replan_requested: outcome.replanRequested,
+        retry_requested: retryRequest !== null,
+        retry_attempt: retryRequest?.retryAttempt
       },
       {
         demand_id: demand.demand_id,
@@ -218,7 +370,31 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     }
   }
 
-  if (outcome.decisionReasonCode && outcome.decisionPrompt) {
+  if (retryRequest) {
+    logger.info({
+      demandId: demand.demand_id,
+      subgoalId: subgoal.subgoal_id,
+      executionId: execution.execution_id,
+      retryAttempt: retryRequest.retryAttempt
+    });
+    events.push(
+      createEvent(
+        EventType.SUBGOAL_RETRY_REQUESTED,
+        {
+          reason: "retry_after_failed_verification",
+          previous_execution_id: execution.execution_id,
+          retry_attempt: retryRequest.retryAttempt,
+          max_retry_count: retryRequest.maxRetryCount
+        },
+        {
+          demand_id: demand.demand_id,
+          subgoal_id: subgoal.subgoal_id,
+          execution_id: execution.execution_id,
+          worker_id: execution.worker_id
+        }
+      )
+    );
+  } else if (outcome.decisionReasonCode && outcome.decisionPrompt) {
     const settings = await ctx.repositories.loadSettings();
     const prompt = await ctx.decisionService.buildPrompt({
       demand,
@@ -257,6 +433,113 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   }
 
   return { events };
+  } finally {
+    reconcilingVerificationExecutions.delete(execution.execution_id);
+  }
+}
+
+/**
+ * Handles an unattended retry for the same subgoal after failed verification.
+ * This is deliberately separate from demand-level replan: no new frontier is
+ * generated here; the scheduler creates another execution for the same
+ * SubgoalContract with the recorded failure guidance attached to demand
+ * metadata.
+ */
+export async function onSubgoalRetryRequested(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
+  const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
+  const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
+  const previousExecution = await ctx.repositories.executions.getById(event.execution_id ?? "");
+  const settings = await ctx.repositories.loadSettings();
+  if (!demand || !subgoal || !previousExecution || !demand.operational_objective) {
+    logger.warn({
+      demandId: event.demand_id,
+      subgoalId: event.subgoal_id,
+      executionId: event.execution_id
+    }, "Ignoring subgoal retry request because required records are missing");
+    return {};
+  }
+  if (isTerminalDemand(demand) || demand.state === DemandState.PAUSED) {
+    logger.debug({ demandId: demand.demand_id, state: demand.state }, "Ignoring subgoal retry because demand is not schedulable");
+    return {};
+  }
+  if ([SubgoalState.DONE, SubgoalState.FAILED, SubgoalState.CANCELLED].includes(subgoal.state)) {
+    logger.warn({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, state: subgoal.state }, "Ignoring subgoal retry because subgoal is terminal");
+    return {};
+  }
+
+  const readySubgoal = subgoal.state === SubgoalState.READY
+    ? subgoal
+    : transitionSubgoal(subgoal, { state: SubgoalState.READY });
+  if (readySubgoal !== subgoal) {
+    await ctx.repositories.subgoals.upsert(readySubgoal);
+  }
+
+  const workers = await ctx.repositories.workers.list();
+  const worker = ctx.dispatcher.selectWorker(workers, readySubgoal);
+  if (!worker) {
+    await ctx.repositories.subgoals.upsert(transitionSubgoal(readySubgoal, { state: SubgoalState.BLOCKED }));
+    const prompt = await ctx.decisionService.buildPrompt({
+      demand,
+      settings,
+      source: "scheduler",
+      reasonCode: DecisionReasonCode.BLOCKED,
+      fallbackPrompt: "No available worker could retry the failed subgoal"
+    });
+    const decision = ctx.decisionService.createRequest({
+      demandId: demand.demand_id,
+      source: "scheduler",
+      reasonCode: DecisionReasonCode.BLOCKED,
+      prompt,
+      subgoalId: readySubgoal.subgoal_id,
+      executionId: previousExecution.execution_id
+    });
+    return {
+      events: [
+        createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
+          demand_id: demand.demand_id,
+          subgoal_id: readySubgoal.subgoal_id,
+          execution_id: previousExecution.execution_id,
+          decision_id: decision.decision_id
+        })
+      ]
+    };
+  }
+
+  const payload = event.payload as { retry_attempt?: number };
+  const retryExecution = ctx.dispatcher.buildExecution({
+    demand,
+    subgoal: readySubgoal,
+    worker,
+    attempt: payload.retry_attempt ?? previousExecution.attempt + 1
+  });
+  const packet = ctx.dispatcher.buildPacket({
+    demand,
+    subgoal: readySubgoal,
+    execution: retryExecution,
+    worker,
+    workspaceRoot: settings.workspace_root,
+    heartbeatSeconds: settings.runtime.heartbeat_interval_seconds,
+    timeoutSeconds: settings.runtime.execution_timeout_seconds
+  });
+
+  logger.info({
+    demandId: demand.demand_id,
+    subgoalId: readySubgoal.subgoal_id,
+    previousExecutionId: previousExecution.execution_id,
+    retryExecutionId: retryExecution.execution_id,
+    retryAttempt: retryExecution.attempt
+  }, "Created retry execution for failed subgoal");
+
+  return {
+    events: [
+      createEvent(EventType.EXECUTION_CREATED, { execution: retryExecution, dispatch_packet: packet }, {
+        demand_id: demand.demand_id,
+        subgoal_id: readySubgoal.subgoal_id,
+        execution_id: retryExecution.execution_id,
+        worker_id: worker.worker_id
+      })
+    ]
+  };
 }
 
 /**
@@ -310,6 +593,7 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
     return {};
   }
   const hasActiveExecutions = await demandHasActiveExecutions(demand.demand_id, ctx);
+  const settings = await ctx.repositories.loadSettings();
   logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action: payload.decision_response.action, hasActiveExecutions }, "正在处理决策响应");
 
   if (payload.decision_response.action === DecisionAction.PROVIDE_INFO) {
@@ -318,15 +602,15 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
       logger.debug({ demandId: demand.demand_id, decisionId: decision.decision_id }, "忽略空的决策补充信息回复");
       return {};
     }
-    const replyIntent = classifyDecisionReplyIntent(note);
-    const settings = await ctx.repositories.loadSettings();
+    const rawReplyIntent = classifyDecisionReplyIntent(note);
+    const replyIntent = rawReplyIntent === "retry" ? "chat" : rawReplyIntent;
+    const timestamp = nowIso();
     const assistantReply = await ctx.decisionService.buildFollowUp({
       demand,
       settings,
       decision,
       userReply: note
     });
-    const timestamp = nowIso();
     const updatedDecisionMetadata = ctx.decisionService.appendConversationTurns(decision.metadata, [
       { role: "user", content: note, created_at: timestamp },
       { role: "assistant", content: assistantReply, created_at: timestamp }
@@ -356,6 +640,16 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
     }
 
     logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, replyIntent }, "决策指导已接受，准备请求重新规划");
+    const nextDemandMetadata = appendExecutionGuidance(demand.metadata, {
+      source: replyIntent,
+      kind: "decision_guidance",
+      note,
+      created_at: timestamp,
+      decision_id: decision.decision_id,
+      execution_id: decision.execution_id ?? null,
+      subgoal_id: decision.subgoal_id ?? null
+    });
+
     await ctx.repositories.decisions.upsert({
       ...decision,
       status: "RESOLVED" as any,
@@ -367,11 +661,7 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
       state: DemandState.READY,
       current_phase: DemandPhase.PLANNING,
       active_decision_id: null,
-      metadata: appendExecutionGuidance(demand.metadata, {
-        source: replyIntent,
-        note,
-        created_at: timestamp
-      })
+      metadata: nextDemandMetadata
     }, {
       phase: DemandPhase.PLANNING,
       waiting_on: null,

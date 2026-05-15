@@ -24,6 +24,20 @@ import {
   nowIso
 } from "../../../domain/index.js";
 
+function readExecutionGuidance(demand: Demand, subgoalId: string): string[] {
+  const raw = demand.metadata?.execution_guidance;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .filter((item) => item.subgoal_id === undefined || item.subgoal_id === null || item.subgoal_id === subgoalId)
+    .map((item) => typeof item.note === "string" ? item.note.trim() : "")
+    .filter(Boolean)
+    .slice(-4);
+}
+
 export class DispatcherService {
   /**
    * 函数作用：从候选工作器中选择一个可承接子目标的工作器。
@@ -105,6 +119,8 @@ export class DispatcherService {
     heartbeatSeconds: number;
     timeoutSeconds: number;
   }): WorkerDispatchPacket {
+    const executionGuidance = readExecutionGuidance(input.demand, input.subgoal.subgoal_id);
+
     return {
       schema_version: "v1",
       execution_id: input.execution.execution_id,
@@ -116,9 +132,15 @@ export class DispatcherService {
       subgoal_contract: input.subgoal,
       context_slice: {
         mission_state_summary: `Demand phase: ${input.demand.current_phase}`,
-        relevant_history: "v1 minimal history",
+        relevant_history: executionGuidance.length > 0
+          ? executionGuidance.join("\n\n")
+          : "v1 minimal history",
         relevant_artifacts: [],
-        shared_hints: ["Follow the subgoal only", "Do not mutate objective"],
+        shared_hints: [
+          "Follow the subgoal only",
+          "Do not mutate objective",
+          ...executionGuidance.map((note) => `Retry guidance: ${note}`)
+        ],
         environment_notes: [`workspace_root=${input.workspaceRoot}`],
         skills: []
       },

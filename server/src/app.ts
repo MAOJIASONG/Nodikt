@@ -25,6 +25,7 @@ import cors from "cors";
 import express from "express";
 import { WebSocketServer } from "ws";
 
+import type { Session } from "./domain/index.js";
 import { createApiRouter } from "./interface/http/routes.js";
 import { DecisionService } from "./brain/engines/decision/service.js";
 import { DispatcherService } from "./brain/dispatch/dispatcher/service.js";
@@ -40,6 +41,46 @@ import { VerifierService } from "./brain/review/verifier/service.js";
 import { CodexAdapter, OpenCodeAdapter } from "./worker/adapters/index.js";
 import { AdapterRegistry } from "./worker/adapters/registry.js";
 import { WsBroadcaster } from "./interface/realtime/service.js";
+import { deriveSessionFromDemand, stripRuntimeSessionMetadata } from "./brain/scheduler/handlers/sessionState.js";
+import { reduceSession } from "./brain/scheduler/session/sessionReducer.js";
+
+async function ensureSessionStore(repositories: RepositoryBundle): Promise<void> {
+  const [demands, sessions, events] = await Promise.all([
+    repositories.demands.list(),
+    repositories.sessions.list(),
+    repositories.events.list()
+  ]);
+  const sessionsByDemandId = new Map(sessions.map((session) => [session.demand_id, session]));
+  const eventsByDemandId = new Map<string, typeof events>();
+  for (const event of events) {
+    if (!event.demand_id) {
+      continue;
+    }
+    eventsByDemandId.set(event.demand_id, [...(eventsByDemandId.get(event.demand_id) ?? []), event]);
+  }
+  const nextSessions = demands.map((demand) => {
+    const demandEvents = (eventsByDemandId.get(demand.demand_id) ?? [])
+      .sort((left, right) => left.created_at.localeCompare(right.created_at));
+    if (demandEvents.length === 0) {
+      return deriveSessionFromDemand(demand, sessionsByDemandId.get(demand.demand_id));
+    }
+    let session: Session | null = sessionsByDemandId.get(demand.demand_id) ?? null;
+    for (const event of demandEvents) {
+      session = reduceSession(session, demand, event);
+    }
+    return session ?? deriveSessionFromDemand(demand);
+  });
+
+  await repositories.sessions.saveAll(nextSessions);
+  await Promise.all(
+    demands
+      .filter((demand) => demand.metadata?.runtime_session !== undefined)
+      .map((demand) => repositories.demands.upsert({
+        ...demand,
+        metadata: stripRuntimeSessionMetadata(demand.metadata)
+      }))
+  );
+}
 
 /**
  * 函数作用：创建并装配后端应用上下文。
@@ -55,10 +96,11 @@ import { WsBroadcaster } from "./interface/realtime/service.js";
  */
 export async function createApp() {
   const repositories = new RepositoryBundle(path.resolve(__dirname, "../data"));
+  await ensureSessionStore(repositories);
   const dispatcher = new DispatcherService();
-  const verifier = new VerifierService();
-  const reconciliation = new ReconciliationService();
   const llmClient = new LlmClient();
+  const verifier = new VerifierService(llmClient);
+  const reconciliation = new ReconciliationService();
   const planner = new PlannerService(llmClient);
   const decisionService = new DecisionService(llmClient);
   const memoryManager = new MemoryManager();

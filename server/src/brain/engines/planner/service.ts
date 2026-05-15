@@ -23,6 +23,7 @@ import {
   OperationalObjective,
   PlanGeneratedPayload,
   Settings,
+  Session,
   SubgoalContract,
   SubgoalState,
   createId,
@@ -65,6 +66,31 @@ type ExecutionGuidanceNote = {
   source?: string;
   note?: string;
   created_at?: string;
+};
+
+export type ReplanRuntimeContext = {
+  session?: Session | null;
+  recent_events?: Array<{
+    event_type: string;
+    created_at: string;
+    subgoal_id?: string | null;
+    execution_id?: string | null;
+    decision_id?: string | null;
+    summary?: Record<string, unknown>;
+  }>;
+  recent_executions?: Array<{
+    execution_id: string;
+    subgoal_id: string;
+    state: string;
+    result_status?: string | null;
+    claimed_outcome?: string | null;
+    updated_at: string;
+  }>;
+  recent_memory?: Array<{
+    category: string;
+    content: string;
+    created_at?: string;
+  }>;
 };
 
 const ALLOWED_DELIVERABLES = new Set([
@@ -112,6 +138,18 @@ function normalizeDeliverables(value: unknown): Array<"git_commit" | "pull_reque
 function readExecutionGuidance(metadata?: Record<string, unknown>): ExecutionGuidanceNote[] {
   const raw = metadata?.execution_guidance;
   return Array.isArray(raw) ? raw as ExecutionGuidanceNote[] : [];
+}
+
+function compactRuntimeContext(context?: ReplanRuntimeContext): ReplanRuntimeContext | null {
+  if (!context) {
+    return null;
+  }
+  return {
+    session: context.session ?? null,
+    recent_events: context.recent_events?.slice(-20) ?? [],
+    recent_executions: context.recent_executions?.slice(-10) ?? [],
+    recent_memory: context.recent_memory?.slice(-8) ?? []
+  };
 }
 
 export class PlannerService {
@@ -222,11 +260,13 @@ export class PlannerService {
     demand: Demand,
     reason: EventReason,
     planningRound: number,
-    settings: Settings
+    settings: Settings,
+    runtimeContext?: ReplanRuntimeContext
   ): Promise<{
     subgoals: SubgoalContract[];
     payload: PlanGeneratedPayload;
   }> {
+    const compactContext = compactRuntimeContext(runtimeContext);
     let result: FrontierPlanResult;
     try {
       result = await this.llmClient.generateJson<FrontierPlanResult>({
@@ -242,6 +282,9 @@ export class PlannerService {
           "The frontier subgoals must all be same-level, independent, and safe to run in parallel when possible.",
           "Prefer 2-3 frontier subgoals for medium or large coding tasks. Use 1 if the task is truly small or highly sequential.",
           "Do not include blocked later-stage tasks in frontier_subgoals.",
+          "Use the runtime session and recent event history as the current source of truth for where the work is, what failed, what is waiting, and what should not be repeated.",
+          "If re-planning after a failed, partial, blocked, or unverifiable result, address the concrete gap or blocker instead of restarting the same path.",
+          "Respect accepted progress and existing artifacts mentioned in recent events or memory.",
           "Do not mutate the demand objective.",
           "Schema:",
           JSON.stringify({
@@ -275,7 +318,8 @@ export class PlannerService {
           `Operational objective: ${JSON.stringify(demand.operational_objective)}`,
           `Recent execution guidance from user: ${JSON.stringify(readExecutionGuidance(demand.metadata).slice(-6))}`,
           `Planning round: ${planningRound}`,
-          `Reason: ${reason}`
+          `Reason: ${reason}`,
+          `Runtime session and event context: ${JSON.stringify(compactContext)}`
         ].join("\n")
       });
     } catch (error) {
@@ -340,7 +384,10 @@ export class PlannerService {
         planning_round: planningRound,
         dependency_graph_snapshot: {
           frontier: subgoals.map((item) => item.subgoal_id),
-          planner_reason: reason
+          planner_reason: reason,
+          session_id: compactContext?.session?.session_id ?? null,
+          previous_frontier_subgoal_ids: compactContext?.session?.frontier_subgoal_ids ?? [],
+          recent_event_types: compactContext?.recent_events?.map((event) => event.event_type) ?? []
         },
         frontier_subgoal_ids: subgoals.map((item) => item.subgoal_id),
         overall_plan_outline: overallPlanOutline,

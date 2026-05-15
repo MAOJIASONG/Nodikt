@@ -15,11 +15,14 @@
  * - 修改请求协议时，需要确认各模型供应商的兼容模式仍然可用。
  */
 import { ModelConfig, Settings } from "../../../domain/index.js";
+import { createLogger } from "../../../logger.js";
+
+const logger = createLogger("llm");
 
 export class LlmInvocationError extends Error {}
 
 export class LlmClient {
-  constructor(private readonly timeoutMs: number = 45000) {}
+  constructor(private readonly timeoutMs: number = 60000) {}
 
   /**
    * 函数作用：按角色选择可用模型配置。
@@ -214,8 +217,29 @@ export class LlmClient {
     headers: Record<string, string>,
     body: Record<string, unknown>
   ): Promise<any> {
+    const msgs = body.messages as Array<{ role: string; content: string }> | undefined;
+    const sysTxt = typeof body.system === "string"
+      ? body.system
+      : (msgs?.find((m) => m.role === "system")?.content ?? "");
+    const userTxt = msgs
+      ?.filter((m) => m.role !== "system")
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n") ?? "";
+
+    logger.info({
+      url,
+      model: body.model,
+      temperature: body.temperature,
+      maxTokens: (body as Record<string, unknown>).max_tokens,
+      systemLen: sysTxt.length,
+      userLen: userTxt.length,
+      systemPreview: sysTxt.replace(/\n+/g, " ").slice(0, 200),
+      userPreview: userTxt.replace(/\n+/g, " ").slice(0, 300),
+    }, "→ LLM 请求");
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const startMs = Date.now();
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -225,6 +249,16 @@ export class LlmClient {
       });
 
       const text = await response.text();
+      const elapsed = `${((Date.now() - startMs) / 1000).toFixed(2)}s`;
+
+      logger.info({
+        url,
+        status: response.status,
+        elapsed,
+        responseLen: text.length,
+        responsePreview: text.replace(/\n+/g, " ").slice(0, 400),
+      }, "← LLM 响应");
+
       if (!response.ok) {
         throw new LlmInvocationError(`LLM request failed with status ${response.status}: ${text.slice(0, 400)}`);
       }
@@ -233,6 +267,8 @@ export class LlmClient {
       if (error instanceof LlmInvocationError) {
         throw error;
       }
+      const elapsed = `${((Date.now() - startMs) / 1000).toFixed(2)}s`;
+      logger.error({ url, elapsed, err: error }, "← LLM 请求失败");
       throw new LlmInvocationError(`LLM request failed: ${(error as Error).message}`);
     } finally {
       clearTimeout(timeout);

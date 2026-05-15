@@ -151,21 +151,23 @@ export class OpsMonitor {
           );
         }
 
-        const result = await adapter.collectResult(execution.execution_id);
-        if (result) {
-          await eventBus.publish(
-            createEvent(
-              EventType.WORKER_RESULT_RECEIVED,
-              { worker_result: result },
-              {
-                demand_id: execution.demand_id,
-                subgoal_id: execution.subgoal_id,
-                execution_id: execution.execution_id,
-                worker_id: execution.worker_id
-              }
-            )
-          );
-          continue;
+        if (execution.state !== ExecutionState.VERIFYING) {
+          const result = await adapter.collectResult(execution.execution_id);
+          if (result) {
+            await eventBus.publish(
+              createEvent(
+                EventType.WORKER_RESULT_RECEIVED,
+                { worker_result: result },
+                {
+                  demand_id: execution.demand_id,
+                  subgoal_id: execution.subgoal_id,
+                  execution_id: execution.execution_id,
+                  worker_id: execution.worker_id
+                }
+              )
+            );
+            continue;
+          }
         }
 
         const timeoutReason = this.detectTimeout(execution, settings);
@@ -183,6 +185,10 @@ export class OpsMonitor {
           });
         }
       } catch (error) {
+        if (execution.state === ExecutionState.VERIFYING) {
+          logger.warn({ err: error, executionId: execution.execution_id }, "Ignoring worker polling error while execution is verifying");
+          continue;
+        }
         const message = error instanceof Error ? error.message : String(error);
         await eventBus.publish(
           createEvent(

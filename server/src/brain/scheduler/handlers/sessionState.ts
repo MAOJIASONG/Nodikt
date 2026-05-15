@@ -24,6 +24,30 @@ export type ConversationTurn = {
 
 export type DecisionReplyIntent = "chat" | "retry" | "revise";
 
+export type ExecutionGuidance = {
+  source: string;
+  note: string;
+  created_at: string;
+  kind?: string;
+  decision_id?: string | null;
+  execution_id?: string | null;
+  subgoal_id?: string | null;
+  retry_attempt?: number;
+  max_retry_count?: number;
+  failure_context?: Record<string, unknown>;
+};
+
+export type RetryRecord = {
+  decision_id?: string | null;
+  execution_id?: string | null;
+  subgoal_id?: string | null;
+  source: string;
+  note: string;
+  created_at: string;
+  retry_attempt: number;
+  max_retry_count: number;
+};
+
 export type RuntimeSessionPatch = {
   phase?: DemandPhase;
   waiting_on?: string | null;
@@ -39,6 +63,15 @@ type RuntimeSessionSnapshot = {
   latest_checkpoint?: string | null;
   progress_note?: string;
   last_progress_at?: string;
+};
+
+export type RuntimeSessionMetadata = {
+  phase: DemandPhase;
+  waiting_on: string | null;
+  frontier_subgoal_ids: string[];
+  latest_checkpoint: string | null;
+  progress_note: string;
+  last_progress_at: string;
 };
 
 /**
@@ -79,7 +112,7 @@ export function patchRuntimeSession(
  * Build the standalone Session Store snapshot from the legacy demand metadata
  * runtime state. Keeping this projection here lets handlers migrate gradually.
  */
-export function deriveSessionFromDemand(demand: Demand): Session {
+export function deriveSessionFromDemand(demand: Demand, existingSession?: Session | null): Session {
   const runtime = (
     demand.metadata?.runtime_session && typeof demand.metadata.runtime_session === "object"
       ? demand.metadata.runtime_session as RuntimeSessionSnapshot
@@ -95,24 +128,57 @@ export function deriveSessionFromDemand(demand: Demand): Session {
       : {}
   );
   const currentSummary = runtime.progress_note
+    ?? existingSession?.current_summary
     ?? latestPlan.high_level_summary?.mission_state_summary
     ?? demand.clarified_demand
     ?? demand.initial_input
     ?? demand.title;
-  const lastProgressAt = runtime.last_progress_at ?? demand.updated_at;
+  const frontierSubgoalIds = runtime.frontier_subgoal_ids
+    ?? existingSession?.frontier_subgoal_ids
+    ?? [];
+  const lastProgressAt = runtime.last_progress_at ?? existingSession?.last_progress_at ?? demand.updated_at;
 
   return {
     session_id: `session_${demand.demand_id}`,
     demand_id: demand.demand_id,
-    phase: runtime.phase ?? demand.current_phase,
+    phase: runtime.phase ?? existingSession?.phase ?? demand.current_phase,
     current_summary: currentSummary,
-    frontier_subgoal_ids: runtime.frontier_subgoal_ids ?? [],
-    waiting_on: runtime.waiting_on ?? null,
-    latest_checkpoint: runtime.latest_checkpoint ?? null,
+    frontier_subgoal_ids: frontierSubgoalIds,
+    waiting_on: runtime.waiting_on !== undefined ? runtime.waiting_on : existingSession?.waiting_on ?? null,
+    latest_checkpoint: runtime.latest_checkpoint !== undefined ? runtime.latest_checkpoint : existingSession?.latest_checkpoint ?? null,
     last_progress_at: lastProgressAt,
     status: demand.state,
-    created_at: demand.created_at,
+    created_at: existingSession?.created_at ?? demand.created_at,
     updated_at: demand.updated_at
+  };
+}
+
+export function stripRuntimeSessionMetadata(metadata?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const { runtime_session: _runtimeSession, ...rest } = metadata;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+export function runtimeSessionMetadataFromSession(session: Session): RuntimeSessionMetadata {
+  return {
+    phase: session.phase,
+    waiting_on: session.waiting_on,
+    frontier_subgoal_ids: session.frontier_subgoal_ids,
+    latest_checkpoint: session.latest_checkpoint,
+    progress_note: session.current_summary,
+    last_progress_at: session.last_progress_at
+  };
+}
+
+export function withRuntimeSessionMetadata(demand: Demand, session: Session): Demand {
+  return {
+    ...demand,
+    metadata: {
+      ...(stripRuntimeSessionMetadata(demand.metadata) ?? {}),
+      runtime_session: runtimeSessionMetadataFromSession(session)
+    }
   };
 }
 
@@ -238,12 +304,29 @@ export function classifyDecisionReplyIntent(note: string): DecisionReplyIntent {
  */
 export function appendExecutionGuidance(
   metadata: Record<string, unknown> | undefined,
-  guidance: { source: string; note: string; created_at: string }
+  guidance: ExecutionGuidance
 ): Record<string, unknown> {
   const raw = metadata?.execution_guidance;
   const existing = Array.isArray(raw) ? raw as Array<Record<string, unknown>> : [];
   return {
     ...(metadata ?? {}),
     execution_guidance: [...existing, guidance]
+  };
+}
+
+// Retry history is the durable budget ledger; it prevents unattended failures
+// from cycling forever while still giving the planner the last failure context.
+export function readRetryHistory(metadata?: Record<string, unknown>): RetryRecord[] {
+  const raw = metadata?.retry_history;
+  return Array.isArray(raw) ? raw as RetryRecord[] : [];
+}
+
+export function appendRetryHistory(
+  metadata: Record<string, unknown> | undefined,
+  retryRecord: RetryRecord
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    retry_history: [...readRetryHistory(metadata), retryRecord]
   };
 }

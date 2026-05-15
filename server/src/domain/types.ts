@@ -318,6 +318,7 @@ export interface VerificationResult {
   subgoal_id: string;
   verified_status: VerificationStatus;
   accepted_artifacts: ArtifactRef[];
+  gap: string[];
   notes: string;
   verified_at: string;
 }
@@ -416,6 +417,15 @@ export interface ReconciliationCompletedPayload {
   decision_id?: string | null;
   mission_completed: boolean;
   replan_requested: boolean;
+  retry_requested?: boolean;
+  retry_attempt?: number;
+}
+
+export interface SubgoalRetryRequestedPayload {
+  reason: "retry_after_failed_verification";
+  previous_execution_id: string;
+  retry_attempt: number;
+  max_retry_count: number;
 }
 
 export interface DecisionRequestCreatedPayload {
@@ -488,13 +498,14 @@ export type EventPayloadMap = {
   [EventType.WORKER_RESULT_RECEIVED]: WorkerResultPayload;
   [EventType.VERIFICATION_COMPLETED]: VerificationCompletedPayload;
   [EventType.RECONCILIATION_COMPLETED]: ReconciliationCompletedPayload;
+  [EventType.SUBGOAL_RETRY_REQUESTED]: SubgoalRetryRequestedPayload;
   [EventType.DECISION_REQUEST_CREATED]: DecisionRequestCreatedPayload;
   [EventType.DECISION_RESPONSE_RECEIVED]: DecisionResponseReceivedPayload;
   [EventType.REPLAN_REQUESTED]: { reason: EventReason };
   [EventType.DEMAND_PAUSED]: DemandControlPayload;
   [EventType.DEMAND_RESUMED]: DemandControlPayload;
   [EventType.DEMAND_CANCELLED]: DemandControlPayload;
-  [EventType.EXECUTION_STOP_REQUESTED]: { reason?: string };
+  [EventType.EXECUTION_STOP_REQUESTED]: { reason?: string; note?: string | null };
   [EventType.EXECUTION_TIMEOUT_DETECTED]: ExecutionTimeoutDetectedPayload;
   [EventType.WORKER_HEALTH_CHECKED]: WorkerHealthCheckedPayload;
   [EventType.OPS_RECOVERY_ATTEMPTED]: OpsRecoveryAttemptedPayload;
