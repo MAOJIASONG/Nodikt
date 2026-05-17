@@ -1,78 +1,91 @@
 import path from "path";
 
-import { ExecutionState, nowIso, WorkerRegistryStatus } from "./domain/index.js";
+import { ExecutionState, nowIso, WorkerRegistration, WorkerRegistryStatus } from "./domain/index.js";
+import { WorkerAdapter } from "./worker/adapters/index.js";
 import { createApp } from "./app.js";
 
+// 注意：环境变量用 `||` 而不是 `??` —— 用户的 .env 经常把变量留空字符串（如 `NODIKT_WORKSPACE_ROOT=`），
+// `??` 不会回落默认值（空串不是 nullish），会导致 zod 校验 workspace_root 失败。
 const OPEN_CODE_INSTALL_ROOT =
-  process.env.OPENCODE_INSTALL_ROOT ??
-  path.resolve(process.cwd(), "../opencode");
+  process.env.OPENCODE_INSTALL_ROOT
+  || path.resolve(process.cwd(), "../opencode");
 const OPEN_CODE_RUNTIME_HOME =
-  process.env.OPENCODE_RUNTIME_HOME ??
-  path.resolve(process.cwd(), ".opencode-runtime");
+  process.env.OPENCODE_RUNTIME_HOME
+  || path.resolve(process.cwd(), ".opencode-runtime");
+const CLAUDE_CODE_INSTALL_ROOT =
+  process.env.CLAUDE_CODE_INSTALL_ROOT ?? "";
+const CLAUDE_CODE_RUNTIME_HOME =
+  process.env.CLAUDE_CODE_RUNTIME_HOME
+  || path.resolve(process.cwd(), ".claude-code-runtime");
+const CLAUDE_CODE_PERMISSION_MODE =
+  process.env.CLAUDE_CODE_PERMISSION_MODE
+  || "bypassPermissions";
+const CLAUDE_CODE_ALLOWED_TOOLS =
+  process.env.CLAUDE_CODE_ALLOWED_TOOLS ?? "";
+const CLAUDE_CODE_DISALLOWED_TOOLS =
+  process.env.CLAUDE_CODE_DISALLOWED_TOOLS ?? "";
 const DEFAULT_WORKSPACE_ROOT =
-  process.env.NODIKT_WORKSPACE_ROOT ??
-  path.resolve(process.cwd(), "workspace");
+  process.env.NODIKT_WORKSPACE_ROOT
+  || path.resolve(process.cwd(), "workspace");
 
-async function ensureDefaultWorkers(appContext: Awaited<ReturnType<typeof createApp>>): Promise<void> {
-  const { repositories, adapterRegistry, adapters } = appContext;
-  const settings = await repositories.loadSettings();
-  if (settings.workspace_root !== DEFAULT_WORKSPACE_ROOT) {
-    await repositories.settings.save({
-      ...settings,
-      workspace_root: DEFAULT_WORKSPACE_ROOT
-    });
-  }
-  const executions = await repositories.executions.list();
-  const workers = (await repositories.workers.list()).filter((worker) => worker.worker_id !== "worker_codex_local");
-  await repositories.workers.delete("worker_codex_local");
-  if (workers.length > 0) {
-    for (const worker of workers) {
-      const activeExecutionIds = worker.current_execution_ids.filter((executionId) => {
-        const execution = executions.find((item) => item.execution_id === executionId);
-        return execution?.state === ExecutionState.RUNNING || execution?.state === ExecutionState.QUEUED || execution?.state === ExecutionState.VERIFYING;
-      });
-      const normalizedWorker = {
-        ...worker,
-        status: activeExecutionIds.length > 0 ? WorkerRegistryStatus.BUSY : WorkerRegistryStatus.IDLE,
-        max_concurrency: Math.max(worker.max_concurrency, 3),
-        current_execution_ids: activeExecutionIds,
-        config: {
-          ...worker.config,
-          workspace_root: DEFAULT_WORKSPACE_ROOT,
-          env: {
-            ...(worker.config.env ?? {}),
-            HOME: OPEN_CODE_RUNTIME_HOME,
-            PATH: `${path.join(OPEN_CODE_INSTALL_ROOT, "bin")}:${process.env.PATH ?? ""}`
-          }
-        },
-        updated_at: nowIso()
-      };
-      await repositories.workers.upsert(normalizedWorker);
-      adapterRegistry.registerAdapter(normalizedWorker.worker_id, normalizedWorker, adapters.opencodeAdapter);
-      await adapters.opencodeAdapter.register(normalizedWorker);
-    }
-    return;
-  }
+type AppContext = Awaited<ReturnType<typeof createApp>>;
 
-  const timestamp = nowIso();
-  const opencodeWorker = {
+function pickAdapterByType(
+  adapters: AppContext["adapters"],
+  adapterType: string
+): WorkerAdapter | null {
+  switch (adapterType) {
+    case "opencode":
+      return adapters.opencodeAdapter;
+    case "claude_code":
+      return adapters.claudeCodeAdapter;
+    case "codex":
+      return adapters.codexAdapter;
+    default:
+      return null;
+  }
+}
+
+function buildOpencodeEnv(): Record<string, string> {
+  return {
+    HOME: OPEN_CODE_RUNTIME_HOME,
+    PATH: `${path.join(OPEN_CODE_INSTALL_ROOT, "bin")}:${process.env.PATH ?? ""}`
+  };
+}
+
+function buildClaudeCodeEnv(): Record<string, string> {
+  const env: Record<string, string> = {
+    HOME: CLAUDE_CODE_RUNTIME_HOME,
+    PATH: CLAUDE_CODE_INSTALL_ROOT.length > 0
+      ? `${path.join(CLAUDE_CODE_INSTALL_ROOT, "bin")}:${process.env.PATH ?? ""}`
+      : process.env.PATH ?? "",
+    CLAUDE_CODE_PERMISSION_MODE
+  };
+  if (CLAUDE_CODE_ALLOWED_TOOLS.length > 0) {
+    env.CLAUDE_CODE_ALLOWED_TOOLS = CLAUDE_CODE_ALLOWED_TOOLS;
+  }
+  if (CLAUDE_CODE_DISALLOWED_TOOLS.length > 0) {
+    env.CLAUDE_CODE_DISALLOWED_TOOLS = CLAUDE_CODE_DISALLOWED_TOOLS;
+  }
+  return env;
+}
+
+function buildDefaultOpencodeWorker(timestamp: string): WorkerRegistration {
+  return {
     worker_id: "worker_opencode_local",
     name: "OpenCode Local",
-    adapter_type: "opencode" as const,
-    runtime_type: "local_command" as const,
+    adapter_type: "opencode",
+    runtime_type: "local_command",
     status: WorkerRegistryStatus.IDLE,
     max_concurrency: 3,
     capabilities: ["code_generation", "file_edit", "command_execution"],
     available_skills: [],
-    install_policy: "allowed_with_review" as const,
+    install_policy: "allowed_with_review",
     config: {
       workspace_root: DEFAULT_WORKSPACE_ROOT,
       command: "bash",
       args: [path.join(OPEN_CODE_INSTALL_ROOT, "opencode_run.sh")],
-      env: {
-        HOME: OPEN_CODE_RUNTIME_HOME,
-        PATH: `${path.join(OPEN_CODE_INSTALL_ROOT, "bin")}:${process.env.PATH ?? ""}`
-      }
+      env: buildOpencodeEnv()
     },
     current_execution_ids: [],
     last_seen_at: null,
@@ -81,10 +94,119 @@ async function ensureDefaultWorkers(appContext: Awaited<ReturnType<typeof create
     created_at: timestamp,
     updated_at: timestamp
   };
+}
 
-  await repositories.workers.upsert(opencodeWorker);
-  adapterRegistry.registerAdapter(opencodeWorker.worker_id, opencodeWorker, adapters.opencodeAdapter);
-  await adapters.opencodeAdapter.register(opencodeWorker);
+function buildDefaultClaudeCodeWorker(timestamp: string): WorkerRegistration {
+  return {
+    worker_id: "worker_claude_code_local",
+    name: "Claude Code Local",
+    adapter_type: "claude_code",
+    runtime_type: "local_command",
+    status: WorkerRegistryStatus.IDLE,
+    max_concurrency: 4,
+    capabilities: ["code_generation", "file_edit", "command_execution"],
+    available_skills: [],
+    install_policy: "allowed_with_review",
+    config: {
+      workspace_root: DEFAULT_WORKSPACE_ROOT,
+      command: CLAUDE_CODE_INSTALL_ROOT.length > 0
+        ? path.join(CLAUDE_CODE_INSTALL_ROOT, "bin", "claude")
+        : "claude",
+      args: [],
+      env: buildClaudeCodeEnv()
+    },
+    current_execution_ids: [],
+    last_seen_at: null,
+    last_error: null,
+    is_enabled: true,
+    created_at: timestamp,
+    updated_at: timestamp
+  };
+}
+
+function normalizeWorkerConfig(worker: WorkerRegistration): WorkerRegistration {
+  if (worker.adapter_type === "claude_code") {
+    return {
+      ...worker,
+      config: {
+        ...worker.config,
+        workspace_root: DEFAULT_WORKSPACE_ROOT,
+        env: {
+          ...buildClaudeCodeEnv(),
+          ...(worker.config.env ?? {})
+        }
+      }
+    };
+  }
+  return {
+    ...worker,
+    config: {
+      ...worker.config,
+      workspace_root: DEFAULT_WORKSPACE_ROOT,
+      env: {
+        ...(worker.config.env ?? {}),
+        ...buildOpencodeEnv()
+      }
+    }
+  };
+}
+
+async function registerWorker(
+  appContext: AppContext,
+  worker: WorkerRegistration,
+  adapter: WorkerAdapter
+): Promise<void> {
+  await appContext.repositories.workers.upsert(worker);
+  appContext.adapterRegistry.registerAdapter(worker.worker_id, worker, adapter);
+  await adapter.register(worker);
+}
+
+async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
+  const { repositories, adapters } = appContext;
+  const settings = await repositories.loadSettings();
+  if (settings.workspace_root !== DEFAULT_WORKSPACE_ROOT) {
+    await repositories.settings.save({
+      ...settings,
+      workspace_root: DEFAULT_WORKSPACE_ROOT
+    });
+  }
+
+  // Legacy cleanup: remove deprecated worker_codex_local row before reconciling.
+  await repositories.workers.delete("worker_codex_local");
+
+  const executions = await repositories.executions.list();
+  const existing = (await repositories.workers.list()).filter((worker) => worker.worker_id !== "worker_codex_local");
+
+  const seenAdapterTypes = new Set<string>();
+  for (const worker of existing) {
+    const adapter = pickAdapterByType(adapters, worker.adapter_type);
+    if (!adapter) {
+      continue;
+    }
+    const activeExecutionIds = worker.current_execution_ids.filter((executionId) => {
+      const execution = executions.find((item) => item.execution_id === executionId);
+      return execution?.state === ExecutionState.RUNNING
+        || execution?.state === ExecutionState.QUEUED
+        || execution?.state === ExecutionState.VERIFYING;
+    });
+    const normalized = normalizeWorkerConfig({
+      ...worker,
+      status: activeExecutionIds.length > 0 ? WorkerRegistryStatus.BUSY : WorkerRegistryStatus.IDLE,
+      max_concurrency: Math.max(worker.max_concurrency, worker.adapter_type === "claude_code" ? 4 : 3),
+      current_execution_ids: activeExecutionIds,
+      updated_at: nowIso()
+    });
+    await registerWorker(appContext, normalized, adapter);
+    seenAdapterTypes.add(worker.adapter_type);
+  }
+
+  const timestamp = nowIso();
+  if (!seenAdapterTypes.has("opencode")) {
+    await registerWorker(appContext, buildDefaultOpencodeWorker(timestamp), adapters.opencodeAdapter);
+  }
+  if (!seenAdapterTypes.has("claude_code")) {
+    await registerWorker(appContext, buildDefaultClaudeCodeWorker(timestamp), adapters.claudeCodeAdapter);
+  }
 }
 
 async function main(): Promise<void> {

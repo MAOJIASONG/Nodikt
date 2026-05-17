@@ -38,7 +38,7 @@ import { PlannerService } from "./brain/engines/planner/service.js";
 import { ReconciliationService } from "./brain/review/reconciliation/service.js";
 import { RepositoryBundle } from "./brain/store/repositories/index.js";
 import { VerifierService } from "./brain/review/verifier/service.js";
-import { CodexAdapter, OpenCodeAdapter } from "./worker/adapters/index.js";
+import { ClaudeCodeAdapter, CodexAdapter, OpenCodeAdapter } from "./worker/adapters/index.js";
 import { AdapterRegistry } from "./worker/adapters/registry.js";
 import { WsBroadcaster } from "./interface/realtime/service.js";
 import { deriveSessionFromDemand, stripRuntimeSessionMetadata } from "./brain/scheduler/handlers/sessionState.js";
@@ -164,6 +164,7 @@ export async function createApp() {
 
   const codexAdapter = new CodexAdapter();
   const opencodeAdapter = new OpenCodeAdapter();
+  const claudeCodeAdapter = new ClaudeCodeAdapter();
 
   return {
     app,
@@ -175,7 +176,8 @@ export async function createApp() {
     adapterRegistry,
     adapters: {
       codexAdapter,
-      opencodeAdapter
+      opencodeAdapter,
+      claudeCodeAdapter
     }
   };
 }
