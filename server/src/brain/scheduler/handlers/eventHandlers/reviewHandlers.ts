@@ -23,8 +23,11 @@ import {
   createEvent,
   DecisionAction,
   DecisionReasonCode,
+  DecisionRequest,
+  Demand,
   DemandPhase,
   DemandState,
+  EventReason,
   EventType,
   ExecutionState,
   HandlerResult,
@@ -57,8 +60,40 @@ import {
   syncWorkerExecutionSlots
 } from "../executionRuntime.js";
 import { collectEventRefs } from "./shared.js";
+import { collectWorkspaceGrants } from "../../../dispatch/dispatcher/service.js";
 
 const logger = createLogger("handlers:review");
+
+const RECON_ACTIVE_EXECUTION_STATES = new Set<ExecutionState>([
+  ExecutionState.QUEUED,
+  ExecutionState.RUNNING,
+  ExecutionState.WAITING_RESULT,
+  ExecutionState.VERIFYING
+]);
+
+/**
+ * 函数作用：查找同一 demand 下、除当前外仍处于 active 状态的 recon execution。
+ * 用于实现并行 recon barrier —— 只有所有 recon 都完成才回灌发现一次。
+ */
+async function listActiveOtherReconExecutions(
+  ctx: HandlerContext,
+  demandId: string,
+  excludeExecutionId: string
+) {
+  const [executions, subgoals] = await Promise.all([
+    ctx.repositories.executions.list(),
+    ctx.repositories.subgoals.list()
+  ]);
+  const reconSubgoalIds = new Set(
+    subgoals.filter((sg) => sg.demand_id === demandId && sg.kind === "recon").map((sg) => sg.subgoal_id)
+  );
+  return executions.filter((exec) => (
+    exec.demand_id === demandId
+    && exec.execution_id !== excludeExecutionId
+    && reconSubgoalIds.has(exec.subgoal_id)
+    && RECON_ACTIVE_EXECUTION_STATES.has(exec.state)
+  ));
+}
 const reconcilingVerificationExecutions = new Set<string>();
 
 function buildRetryFailureContext(input: {
@@ -181,43 +216,49 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
   } | null = null;
 
   if (verification.verified_status === "VERIFIED_DONE") {
-    const unfinishedStates = new Set([
-      SubgoalState.PLANNED,
-      SubgoalState.READY,
-      SubgoalState.DISPATCHED,
-      SubgoalState.EXECUTING,
-      SubgoalState.VERIFYING
-    ]);
-    const hasOtherUnfinishedSubgoals = projectedSubgoals.some((item) => (
-      item.subgoal_id !== outcome.subgoal.subgoal_id && unfinishedStates.has(item.state)
-    ));
+    // clarification 阶段的 recon（demand 还没 clarified 完，OO=null）不参与"任务推进"判断 ——
+    // 它的 outcome 已经在 reconciliation 里设置好（demand state 保持不动、replanRequested=true 让下游回灌发现）。
+    // 如果在这里再硬推 ACTIVE，会撞状态机（PENDING_ALIGNMENT → ACTIVE 不合法）。
+    const isReconInClarification = subgoal.kind === "recon" && !demand.operational_objective;
+    if (!isReconInClarification) {
+      const unfinishedStates = new Set([
+        SubgoalState.PLANNED,
+        SubgoalState.READY,
+        SubgoalState.DISPATCHED,
+        SubgoalState.EXECUTING,
+        SubgoalState.VERIFYING
+      ]);
+      const hasOtherUnfinishedSubgoals = projectedSubgoals.some((item) => (
+        item.subgoal_id !== outcome.subgoal.subgoal_id && unfinishedStates.has(item.state)
+      ));
 
-    const latestPlan = (demand.metadata?.latest_plan ?? null) as {
-      overall_plan_outline?: Array<{ frontier_subgoal_ids?: string[] }>;
-    } | null;
+      const latestPlan = (demand.metadata?.latest_plan ?? null) as {
+        overall_plan_outline?: Array<{ frontier_subgoal_ids?: string[] }>;
+      } | null;
 
-    const hasFuturePlanSteps = Array.isArray(latestPlan?.overall_plan_outline)
-      ? latestPlan!.overall_plan_outline.some((item) => {
-          const ids = Array.isArray(item.frontier_subgoal_ids) ? item.frontier_subgoal_ids : [];
-          if (ids.length === 0) {
-            return true;
-          }
-          return !ids.some((subgoalId) => projectedSubgoals.some((candidate) => candidate.subgoal_id === subgoalId && candidate.state === SubgoalState.DONE));
-        })
-      : false;
+      const hasFuturePlanSteps = Array.isArray(latestPlan?.overall_plan_outline)
+        ? latestPlan!.overall_plan_outline.some((item) => {
+            const ids = Array.isArray(item.frontier_subgoal_ids) ? item.frontier_subgoal_ids : [];
+            if (ids.length === 0) {
+              return true;
+            }
+            return !ids.some((subgoalId) => projectedSubgoals.some((candidate) => candidate.subgoal_id === subgoalId && candidate.state === SubgoalState.DONE));
+          })
+        : false;
 
-    if (hasOtherUnfinishedSubgoals) {
-      outcome.demand.state = DemandState.ACTIVE;
-      outcome.demand.current_phase = DemandPhase.EXECUTION;
-      outcome.demand.progress_percent = Math.min(95, Math.max(outcome.demand.progress_percent, 70));
-      outcome.missionCompleted = false;
-      outcome.replanRequested = false;
-    } else if (hasFuturePlanSteps) {
-      outcome.demand.state = DemandState.ACTIVE;
-      outcome.demand.current_phase = DemandPhase.PLANNING;
-      outcome.demand.progress_percent = Math.min(95, Math.max(outcome.demand.progress_percent, 75));
-      outcome.missionCompleted = false;
-      outcome.replanRequested = true;
+      if (hasOtherUnfinishedSubgoals) {
+        outcome.demand.state = DemandState.ACTIVE;
+        outcome.demand.current_phase = DemandPhase.EXECUTION;
+        outcome.demand.progress_percent = Math.min(95, Math.max(outcome.demand.progress_percent, 70));
+        outcome.missionCompleted = false;
+        outcome.replanRequested = false;
+      } else if (hasFuturePlanSteps) {
+        outcome.demand.state = DemandState.ACTIVE;
+        outcome.demand.current_phase = DemandPhase.PLANNING;
+        outcome.demand.progress_percent = Math.min(95, Math.max(outcome.demand.progress_percent, 75));
+        outcome.missionCompleted = false;
+        outcome.replanRequested = true;
+      }
     }
   }
 
@@ -396,22 +437,56 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     );
   } else if (outcome.decisionReasonCode && outcome.decisionPrompt) {
     const settings = await ctx.repositories.loadSettings();
-    const prompt = await ctx.decisionService.buildPrompt({
-      demand,
-      settings,
-      source: verification.verified_status === "UNVERIFIABLE" ? "verifier" : "worker",
-      reasonCode: outcome.decisionReasonCode,
-      fallbackPrompt: outcome.decisionPrompt
-    });
+    const blockerCode = typeof workerResult.blocker_reason?.code === "string"
+      ? workerResult.blocker_reason.code
+      : "";
+    const isClaudeCodeAsk = blockerCode.startsWith("claude_code_");
+    const adapterMeta = (workerResult.adapter_meta ?? {}) as Record<string, unknown>;
+    const claudeAskSignal = adapterMeta.claude_ask_signal as
+      | { source?: string; prompt?: string; options?: Array<{ label?: string; description?: string }>; raw?: unknown }
+      | null
+      | undefined;
+
+    // Claude Code 询问类决策直接用原问句，避免 LLM 改写丢精度
+    const prompt = isClaudeCodeAsk
+      ? outcome.decisionPrompt
+      : await ctx.decisionService.buildPrompt({
+          demand,
+          settings,
+          source: verification.verified_status === "UNVERIFIABLE" ? "verifier" : "worker",
+          reasonCode: outcome.decisionReasonCode,
+          fallbackPrompt: outcome.decisionPrompt
+        });
+
+    const decisionMetadata = isClaudeCodeAsk
+      ? {
+          claude_code: {
+            ask_source: claudeAskSignal?.source ?? null,
+            options: Array.isArray(claudeAskSignal?.options) ? claudeAskSignal!.options : [],
+            session_id: typeof adapterMeta.claude_session_id === "string" ? adapterMeta.claude_session_id : null,
+            blocker_code: blockerCode,
+            raw: claudeAskSignal?.raw ?? null
+          }
+        }
+      : undefined;
+
     const decision = ctx.decisionService.createRequest({
       demandId: demand.demand_id,
       source: verification.verified_status === "UNVERIFIABLE" ? "verifier" : "worker",
       reasonCode: outcome.decisionReasonCode,
       prompt,
       subgoalId: subgoal.subgoal_id,
-      executionId: execution.execution_id
+      executionId: execution.execution_id,
+      metadata: decisionMetadata
     });
-    logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, decisionId: decision.decision_id }, "已根据验证结果创建决策请求");
+    logger.info({
+      demandId: demand.demand_id,
+      subgoalId: subgoal.subgoal_id,
+      executionId: execution.execution_id,
+      decisionId: decision.decision_id,
+      isClaudeCodeAsk,
+      blockerCode
+    }, "已根据验证结果创建决策请求");
     events.push(
       createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
         demand_id: demand.demand_id,
@@ -421,10 +496,111 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
       })
     );
   } else if (outcome.replanRequested) {
-    logger.info({ demandId: demand.demand_id }, "验证后准备请求重新规划");
-    events.push(
-      createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" }, { demand_id: demand.demand_id })
-    );
+    // recon 子目标 verified done 触发的回流分两种情况：
+    //   (a) demand 已经 clarified → publish REPLAN_REQUESTED(reason="recon_completed")
+    //   (b) demand 尚未 clarified → publish USER_INPUT_RECEIVED(input_kind="recon_findings") 回灌给 clarifier
+    // 并行 recon barrier：还有别的 recon 在跑就把发现暂存到 buffer 不发后续事件，
+    // 等最后一个 recon 完成才一次性回灌
+    const isReconReplan = subgoal.kind === "recon"
+      && verification.verified_status === "VERIFIED_DONE";
+
+    if (isReconReplan) {
+      const activeReconExecutions = await listActiveOtherReconExecutions(
+        ctx,
+        demand.demand_id,
+        execution.execution_id
+      );
+      const currentFinding = {
+        subgoal_id: subgoal.subgoal_id,
+        subgoal_title: subgoal.title,
+        claimed_outcome: workerResult.claimed_outcome ?? "",
+        compressed_history: workerResult.compressed_history ?? "",
+        captured_at: nowIso()
+      };
+      const freshDemand = await ctx.repositories.demands.getById(demand.demand_id);
+      const existingBuffer = Array.isArray(freshDemand?.metadata?.recon_findings_buffer)
+        ? (freshDemand!.metadata!.recon_findings_buffer as Array<Record<string, unknown>>)
+        : [];
+
+      if (activeReconExecutions.length > 0) {
+        // 还有别的 recon 在跑——只暂存
+        const nextBuffer = [...existingBuffer, currentFinding];
+        await ctx.repositories.demands.upsert({
+          ...freshDemand!,
+          metadata: {
+            ...(freshDemand!.metadata ?? {}),
+            recon_findings_buffer: nextBuffer
+          },
+          updated_at: nowIso()
+        });
+        logger.info({
+          demandId: demand.demand_id,
+          subgoalId: subgoal.subgoal_id,
+          bufferedCount: nextBuffer.length,
+          stillActiveReconCount: activeReconExecutions.length
+        }, "Recon 完成但同 demand 还有别的 recon 在跑，发现暂存等待汇总");
+      } else {
+        // 自己是最后一个 recon ——清空 buffer，把所有发现一次性合成回灌
+        const allFindings = [...existingBuffer, currentFinding]
+          .map((f) => [
+            `Recon subgoal: ${String(f.subgoal_title ?? "(untitled)")}`,
+            f.claimed_outcome ? `Worker summary: ${String(f.claimed_outcome)}` : "",
+            f.compressed_history ? `Detailed trace:\n${String(f.compressed_history)}` : ""
+          ].filter(Boolean).join("\n\n"))
+          .join("\n\n---\n\n");
+
+        await ctx.repositories.demands.upsert({
+          ...freshDemand!,
+          metadata: {
+            ...(freshDemand!.metadata ?? {}),
+            recon_findings_buffer: undefined
+          },
+          updated_at: nowIso()
+        });
+
+        if (!demand.operational_objective) {
+          // (b) clarification 阶段：回灌给 clarifier
+          logger.info({
+            demandId: demand.demand_id,
+            subgoalId: subgoal.subgoal_id,
+            bufferedCount: existingBuffer.length + 1,
+            findingsLen: allFindings.length
+          }, "所有 recon 已完成，把累积发现回灌给 clarifier");
+          events.push(
+            createEvent(
+              EventType.USER_INPUT_RECEIVED,
+              {
+                input_text: allFindings,
+                input_kind: "recon_findings",
+                source: "scheduler",
+                session_tag: null
+              },
+              { demand_id: demand.demand_id }
+            )
+          );
+        } else {
+          // (a) plan 阶段：触发 planner 重新规划
+          logger.info({
+            demandId: demand.demand_id,
+            subgoalId: subgoal.subgoal_id,
+            bufferedCount: existingBuffer.length + 1
+          }, "所有 recon 已完成，触发 planner 重新规划");
+          events.push(
+            createEvent(EventType.REPLAN_REQUESTED, { reason: "recon_completed" as EventReason }, { demand_id: demand.demand_id })
+          );
+        }
+      }
+    } else {
+      // 非 recon 的 PARTIAL replan：走隐式路径，不审核
+      logger.info({
+        demandId: demand.demand_id,
+        subgoalId: subgoal.subgoal_id,
+        subgoalKind: subgoal.kind
+      }, "验证后准备请求重新规划 (隐式)");
+      events.push(
+        createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" }, { demand_id: demand.demand_id })
+      );
+    }
   } else if (outcome.missionCompleted) {
     logger.info({ demandId: demand.demand_id }, "验证结果已完成任务");
     events.push(
@@ -512,6 +688,8 @@ export async function onSubgoalRetryRequested(event: SchedulerEvent, ctx: Handle
     worker,
     attempt: payload.retry_attempt ?? previousExecution.attempt + 1
   });
+  const memorySnapshot = await ctx.memoryManager.getDispatchMemorySnapshot(ctx.repositories, demand.demand_id);
+  const workspaceGrants = collectWorkspaceGrants(settings, demand);
   const packet = ctx.dispatcher.buildPacket({
     demand,
     subgoal: readySubgoal,
@@ -519,7 +697,9 @@ export async function onSubgoalRetryRequested(event: SchedulerEvent, ctx: Handle
     worker,
     workspaceRoot: settings.workspace_root,
     heartbeatSeconds: settings.runtime.heartbeat_interval_seconds,
-    timeoutSeconds: settings.runtime.execution_timeout_seconds
+    timeoutSeconds: settings.runtime.execution_timeout_seconds,
+    memorySnapshot,
+    workspaceGrants
   });
 
   logger.info({
@@ -584,6 +764,157 @@ export async function onDecisionRequestCreated(event: SchedulerEvent, ctx: Handl
  * 返回值：
  * - Promise<HandlerResult>：决策关闭、状态更新和后续事件发布结果。
  */
+/**
+ * 函数作用：处理 PLAN_REVIEW 决策的用户响应。
+ *
+ * 注意事项：
+ * - PROVIDE_INFO 强制走 replan 路径，不受 classifyDecisionReplyIntent 影响。
+ * - APPROVE 时根据决策 metadata.plan_review.frontier_subgoal_ids 找到 PLANNED 状态的 subgoal 批量发 SUBGOAL_MARKED_READY。
+ */
+async function handlePlanReviewDecision(
+  event: SchedulerEvent,
+  ctx: HandlerContext,
+  decision: DecisionRequest,
+  demand: Demand,
+  payload: { decision_response: { action: DecisionAction; note?: string | null; payload?: Record<string, unknown> } }
+): Promise<HandlerResult> {
+  void event;
+  const action = payload.decision_response.action;
+  const note = (payload.decision_response.note ?? "").trim();
+  const timestamp = nowIso();
+  const planReviewMeta = (decision.metadata?.plan_review as Record<string, unknown> | undefined) ?? {};
+  const latestPlan = demand.metadata?.latest_plan as Record<string, unknown> | undefined;
+  const frontierIds: string[] = Array.isArray(planReviewMeta.frontier_subgoal_ids)
+    ? (planReviewMeta.frontier_subgoal_ids as unknown[]).filter((id): id is string => typeof id === "string")
+    : Array.isArray(latestPlan?.frontier_subgoal_ids)
+      ? (latestPlan!.frontier_subgoal_ids as unknown[]).filter((id): id is string => typeof id === "string")
+      : [];
+
+  if (action === DecisionAction.APPROVE) {
+    await ctx.repositories.decisions.upsert({
+      ...decision,
+      status: "RESOLVED" as any,
+      resolved_at: timestamp
+    });
+    await ctx.repositories.demands.upsert(transitionDemand(demand, {
+      state: DemandState.ACTIVE,
+      current_phase: DemandPhase.EXECUTION,
+      active_decision_id: null
+    }, {
+      phase: DemandPhase.EXECUTION,
+      waiting_on: "worker_result",
+      progress_note: "Plan approved by user; unlocking frontier subgoals"
+    }));
+
+    const matchingSubgoals = (await ctx.repositories.subgoals.list()).filter((sg) =>
+      sg.demand_id === demand.demand_id
+      && frontierIds.includes(sg.subgoal_id)
+      && sg.state === SubgoalState.PLANNED
+    );
+    logger.info({
+      demandId: demand.demand_id,
+      decisionId: decision.decision_id,
+      frontierIds,
+      unlockedSubgoalCount: matchingSubgoals.length
+    }, "Plan 已通过审核，准备解锁前沿 subgoals");
+
+    return {
+      events: matchingSubgoals.map((sg) => createEvent(
+        EventType.SUBGOAL_MARKED_READY,
+        { dependency_check: { satisfied_dependencies: [], remaining_dependencies: [] } },
+        { demand_id: demand.demand_id, subgoal_id: sg.subgoal_id }
+      ))
+    };
+  }
+
+  if (action === DecisionAction.PROVIDE_INFO) {
+    if (!note) {
+      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "Plan review 反馈为空，保持决策打开");
+      return {};
+    }
+
+    const settings = await ctx.repositories.loadSettings();
+    const assistantReply = await ctx.decisionService.buildFollowUp({
+      demand,
+      settings,
+      decision,
+      userReply: note
+    });
+    const updatedDecisionMetadata = ctx.decisionService.appendConversationTurns(decision.metadata, [
+      { role: "user", content: note, created_at: timestamp },
+      { role: "assistant", content: assistantReply, created_at: timestamp }
+    ]);
+    const nextDemandMetadata = appendExecutionGuidance(demand.metadata, {
+      source: "user",
+      kind: "plan_review_feedback",
+      note,
+      created_at: timestamp,
+      decision_id: decision.decision_id
+    });
+
+    await ctx.repositories.decisions.upsert({
+      ...decision,
+      status: "RESOLVED" as any,
+      resolved_at: timestamp,
+      metadata: updatedDecisionMetadata
+    });
+    await ctx.repositories.demands.upsert(transitionDemand(demand, {
+      state: DemandState.READY,
+      current_phase: DemandPhase.PLANNING,
+      active_decision_id: null,
+      metadata: nextDemandMetadata
+    }, {
+      phase: DemandPhase.PLANNING,
+      waiting_on: null,
+      progress_note: "Plan review feedback accepted, requesting replan"
+    }));
+
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "Plan review 收到反馈，触发重新规划");
+    return {
+      events: [
+        createEvent(
+          EventType.REPLAN_REQUESTED,
+          { reason: "replan_after_decision", note, source: "plan_review" },
+          { demand_id: demand.demand_id }
+        )
+      ]
+    };
+  }
+
+  if (action === DecisionAction.REJECT || action === DecisionAction.CANCEL_DEMAND) {
+    await ctx.repositories.decisions.upsert({
+      ...decision,
+      status: "RESOLVED" as any,
+      resolved_at: timestamp
+    });
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action }, "Plan review 被拒绝/取消，关闭 demand");
+    return {
+      events: [
+        createEvent(
+          EventType.DEMAND_CANCELLED,
+          { action: "cancel", note: note || `plan_review_${String(action).toLowerCase()}` },
+          { demand_id: demand.demand_id }
+        )
+      ]
+    };
+  }
+
+  // PAUSE：关掉当前决策并挂起 demand；STOP 等同 cancel
+  await ctx.repositories.decisions.upsert({
+    ...decision,
+    status: "RESOLVED" as any,
+    resolved_at: timestamp
+  });
+  if (action === DecisionAction.PAUSE) {
+    return {
+      events: [createEvent(EventType.DEMAND_PAUSED, { action: "pause", note: note || undefined }, { demand_id: demand.demand_id })]
+    };
+  }
+  return {
+    events: [createEvent(EventType.DEMAND_CANCELLED, { action: "cancel", note: note || "plan_review_stop" }, { demand_id: demand.demand_id })]
+  };
+}
+
 export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const payload = event.payload as { decision_response: { action: DecisionAction; note?: string; payload?: Record<string, unknown> } };
   const decision = await ctx.repositories.decisions.getById(event.decision_id ?? "");
@@ -594,7 +925,11 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   }
   const hasActiveExecutions = await demandHasActiveExecutions(demand.demand_id, ctx);
   const settings = await ctx.repositories.loadSettings();
-  logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action: payload.decision_response.action, hasActiveExecutions }, "正在处理决策响应");
+  logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action: payload.decision_response.action, hasActiveExecutions, reasonCode: decision.reason_code }, "正在处理决策响应");
+
+  if (decision.reason_code === DecisionReasonCode.PLAN_REVIEW) {
+    return handlePlanReviewDecision(event, ctx, decision, demand, payload);
+  }
 
   if (payload.decision_response.action === DecisionAction.PROVIDE_INFO) {
     const note = payload.decision_response.note?.trim();
