@@ -40,6 +40,7 @@ interface RuntimeRecord {
   startedAt: number;
   stdout: string[];
   stderr: string[];
+  stdoutLineBuffer: string;
   exitCode: number | null;
   finishedAt: number | null;
   errorMessage: string | null;
@@ -49,6 +50,33 @@ interface RuntimeRecord {
 export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
   protected readonly runtimeByExecution = new Map<string, RuntimeRecord>();
   protected readonly workerConfigs = new Map<string, WorkerRegistration>();
+
+  /**
+   * 函数作用：子进程标准输出每完成一行就触发的钩子。
+   *
+   * 参数说明：
+   * - executionId：当前执行 ID。
+   * - line：以换行符切割得到的完整一行（不含换行符）。
+   *
+   * 返回值：
+   * - void：默认空实现，子类可覆盖以增量解析行式协议（如 stream-json）。
+   *
+   * 注意事项：
+   * - 钩子在 close 时会被调用一次以冲洗未结尾的最后一段缓冲区。
+   * - 子类内部状态应以 executionId 维护，避免污染基类记录。
+   */
+  protected onStdoutLine(executionId: string, line: string): void {
+    void executionId;
+    void line;
+  }
+
+  /**
+   * 函数作用：子进程 close 时触发的钩子，便于子类做收尾。
+   */
+  protected onProcessClose(executionId: string, exitCode: number | null): void {
+    void executionId;
+    void exitCode;
+  }
 
   private stripAnsi(input: string): string {
     return input.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
@@ -154,6 +182,7 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
       startedAt: Date.now(),
       stdout: [],
       stderr: [],
+      stdoutLineBuffer: "",
       exitCode: null,
       finishedAt: null,
       errorMessage: null,
@@ -161,7 +190,22 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
-      record.stdout.push(chunk.toString("utf8"));
+      const text = chunk.toString("utf8");
+      record.stdout.push(text);
+      record.stdoutLineBuffer += text;
+      let newlineIndex = record.stdoutLineBuffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = record.stdoutLineBuffer.slice(0, newlineIndex).replace(/\r$/, "");
+        record.stdoutLineBuffer = record.stdoutLineBuffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          try {
+            this.onStdoutLine(packet.execution_id, line);
+          } catch (error) {
+            record.stderr.push(`onStdoutLine error: ${(error as Error).message}`);
+          }
+        }
+        newlineIndex = record.stdoutLineBuffer.indexOf("\n");
+      }
     });
     child.stderr.on("data", (chunk: Buffer) => {
       record.stderr.push(chunk.toString("utf8"));
@@ -172,8 +216,24 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
       record.finishedAt = Date.now();
     });
     child.on("close", (exitCode) => {
+      if (record.stdoutLineBuffer.length > 0) {
+        const tail = record.stdoutLineBuffer.replace(/\r$/, "");
+        record.stdoutLineBuffer = "";
+        if (tail.length > 0) {
+          try {
+            this.onStdoutLine(packet.execution_id, tail);
+          } catch (error) {
+            record.stderr.push(`onStdoutLine error: ${(error as Error).message}`);
+          }
+        }
+      }
       record.exitCode = exitCode;
       record.finishedAt = Date.now();
+      try {
+        this.onProcessClose(packet.execution_id, exitCode);
+      } catch (error) {
+        record.stderr.push(`onProcessClose error: ${(error as Error).message}`);
+      }
     });
 
     this.runtimeByExecution.set(packet.execution_id, record);
