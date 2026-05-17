@@ -20,16 +20,21 @@
  */
 import {
   createEvent,
+  DecisionAction,
+  DecisionReasonCode,
   DemandPhase,
   DemandState,
+  EventReason,
   EventType,
   HandlerResult,
+  PlanGeneratedPayload,
   SchedulerEvent,
   SubgoalState
 } from "../../../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
 import { ReplanRuntimeContext } from "../../../engines/planner/service.js";
+import { collectWorkspaceGrants } from "../../../dispatch/dispatcher/service.js";
 import {
   isTerminalDemand,
   transitionDemand,
@@ -145,7 +150,7 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
 
   const settings = await ctx.repositories.loadSettings();
   const planningRound = (await ctx.repositories.subgoals.list()).filter((item) => item.demand_id === demand.demand_id).length + 1;
-  const reason = (event.payload as { reason: "initial_plan" | "replan_after_result" | "replan_after_decision" | "resume" }).reason;
+  const reason = (event.payload as { reason: EventReason }).reason;
   const runtimeContext = await buildReplanRuntimeContext(demand.demand_id, ctx);
   logger.info({
     demandId: demand.demand_id,
@@ -184,6 +189,44 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
  * 返回值：
  * - Promise<HandlerResult>：子目标创建和需求元数据更新结果。
  */
+// 哪些 plan 来源需要弹出人类审核：
+// - initial_plan: 首次出方案，必审
+// - user_triggered: 用户在 UI 主动点 Replan 触发的
+// - replan_after_decision: 用户在面板提反馈后触发的新一轮
+// - recon_completed: planner 派了 recon 子目标探完后生成的"真正方案"
+// 跳过审核：replan_after_result（worker 报 PARTIAL 自动 replan）；resume（恢复执行，原方案没变）
+const REASONS_REQUIRING_PLAN_REVIEW: ReadonlySet<EventReason> = new Set<EventReason>([
+  "initial_plan",
+  "user_triggered",
+  "replan_after_decision",
+  "recon_completed"
+]);
+
+function buildPlanReviewPrompt(payload: PlanGeneratedPayload, demandTitle: string): string {
+  const outlineLines = payload.overall_plan_outline.slice(0, 8).map((item, index) =>
+    `  ${index + 1}. ${item.title} — ${item.objective}`
+  );
+  const frontierCount = payload.frontier_subgoal_ids.length;
+  return [
+    `新的执行计划已生成（第 ${payload.planning_round} 轮，${frontierCount} 个前沿 subgoal）。`,
+    "",
+    `需求：${demandTitle}`,
+    "",
+    "Plan 概览：",
+    ...outlineLines,
+    payload.overall_plan_outline.length > 8
+      ? `  ... 还有 ${payload.overall_plan_outline.length - 8} 项，请到 Plan 面板查看完整结构。`
+      : "",
+    "",
+    `Mission state：${payload.high_level_summary.mission_state_summary}`,
+    "",
+    "请选择：",
+    "  • Approve：按此方案开始执行",
+    "  • Provide Info：用文字告诉 planner 需要怎么调整，系统会根据你的反馈重新规划",
+    "  • Reject / Cancel Demand：放弃当前方案"
+  ].filter(Boolean).join("\n");
+}
+
 export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!demand) {
@@ -191,7 +234,11 @@ export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext
     return {};
   }
 
-  const frontierSubgoalIds = (event.payload as { frontier_subgoal_ids?: string[] }).frontier_subgoal_ids ?? [];
+  const planPayload = event.payload as PlanGeneratedPayload;
+  const frontierSubgoalIds = planPayload.frontier_subgoal_ids ?? [];
+  const planReason: EventReason | undefined = planPayload.reason;
+  const needsReview = planReason ? REASONS_REQUIRING_PLAN_REVIEW.has(planReason) : true;
+
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
     metadata: {
       ...(demand.metadata ?? {}),
@@ -203,8 +250,52 @@ export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext
     progress_note: "Frontier plan generated"
   }));
 
-  logger.info({ demandId: demand.demand_id, frontierSubgoalCount: frontierSubgoalIds.length }, "已将生成计划保存到需求");
-  return {};
+  logger.info({
+    demandId: demand.demand_id,
+    frontierSubgoalCount: frontierSubgoalIds.length,
+    planReason,
+    needsReview
+  }, "已将生成计划保存到需求");
+
+  if (!needsReview) {
+    return {};
+  }
+
+  // 创建 PLAN_REVIEW 决策，让 demand 切到 PENDING_DECISION 暂停 subgoal 派发
+  const prompt = buildPlanReviewPrompt(planPayload, demand.title || demand.initial_input);
+  const decision = ctx.decisionService.createRequest({
+    demandId: demand.demand_id,
+    source: "scheduler" as any,
+    reasonCode: DecisionReasonCode.PLAN_REVIEW,
+    prompt,
+    options: [
+      DecisionAction.APPROVE,
+      DecisionAction.PROVIDE_INFO,
+      DecisionAction.REJECT,
+      DecisionAction.CANCEL_DEMAND
+    ],
+    metadata: {
+      plan_review: {
+        planning_round: planPayload.planning_round,
+        frontier_subgoal_ids: planPayload.frontier_subgoal_ids,
+        plan_reason: planReason ?? null,
+        outline_titles: planPayload.overall_plan_outline.map((item) => item.title)
+      }
+    }
+  });
+  logger.info({
+    demandId: demand.demand_id,
+    decisionId: decision.decision_id,
+    planReason
+  }, "已为新生成计划创建 PLAN_REVIEW 决策，等待用户审核");
+  return {
+    events: [
+      createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
+        demand_id: demand.demand_id,
+        decision_id: decision.decision_id
+      })
+    ]
+  };
 }
 
 /**
@@ -229,6 +320,15 @@ export async function onSubgoalCreated(event: SchedulerEvent, ctx: HandlerContex
   }
   if (isTerminalDemand(demand) || demand.state === DemandState.PAUSED) {
     logger.debug({ demandId: demand.demand_id, state: demand.state, subgoalId: payload.subgoal_contract.subgoal_id }, "子目标暂不标记为就绪，因为需求当前不可调度");
+    return {};
+  }
+  if (demand.state === DemandState.PENDING_DECISION) {
+    logger.info({
+      demandId: demand.demand_id,
+      state: demand.state,
+      subgoalId: payload.subgoal_contract.subgoal_id,
+      activeDecisionId: demand.active_decision_id
+    }, "子目标保持计划中，等待用户审核 plan");
     return {};
   }
 
@@ -324,6 +424,8 @@ export async function onSubgoalMarkedReady(event: SchedulerEvent, ctx: HandlerCo
   }
 
   const execution = ctx.dispatcher.buildExecution({ demand, subgoal: readySubgoal, worker });
+  const memorySnapshot = await ctx.memoryManager.getDispatchMemorySnapshot(ctx.repositories, demand.demand_id);
+  const workspaceGrants = collectWorkspaceGrants(settings, demand);
   const packet = ctx.dispatcher.buildPacket({
     demand,
     subgoal: readySubgoal,
@@ -331,7 +433,9 @@ export async function onSubgoalMarkedReady(event: SchedulerEvent, ctx: HandlerCo
     worker,
     workspaceRoot: settings.workspace_root,
     heartbeatSeconds: settings.runtime.heartbeat_interval_seconds,
-    timeoutSeconds: settings.runtime.execution_timeout_seconds
+    timeoutSeconds: settings.runtime.execution_timeout_seconds,
+    memorySnapshot,
+    workspaceGrants
   });
 
   logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: execution.execution_id, workerId: worker.worker_id }, "已为就绪子目标创建执行");

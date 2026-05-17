@@ -32,6 +32,7 @@ import {
 } from "../../../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
+import { collectWorkspaceGrants } from "../../../dispatch/dispatcher/service.js";
 import {
   ACTIVE_EXECUTION_STATES,
   transitionDemand,
@@ -68,14 +69,25 @@ export async function onExecutionCreated(event: SchedulerEvent, ctx: HandlerCont
 
   logger.info({ demandId: demand.demand_id, subgoalId: subgoal.subgoal_id, executionId: payload.execution.execution_id, workerId: worker.worker_id }, "正在保存已创建的执行");
   await ctx.repositories.executions.upsert(payload.execution);
+
+  // 普通 build 子目标派发会把 demand 推到 ACTIVE/EXECUTION；
+  // 但 recon 子目标在 clarification 阶段就可能派出去，此时 demand 还在 PENDING_ALIGNMENT，
+  // 状态机不允许 PENDING_ALIGNMENT 直接跳到 ACTIVE。这种情况下让 demand 状态/阶段保持不动，
+  // 只把 waiting_on 改成 worker_result 标识系统在等 recon worker 回报。
+  const isReconInClarification = subgoal.kind === "recon" && !demand.operational_objective;
+  const nextDemandState = isReconInClarification ? demand.state : DemandState.ACTIVE;
+  const nextPhase = isReconInClarification ? demand.current_phase : DemandPhase.EXECUTION;
+
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
-    state: DemandState.ACTIVE,
-    current_phase: DemandPhase.EXECUTION
+    state: nextDemandState,
+    current_phase: nextPhase
   }, {
-    phase: DemandPhase.EXECUTION,
+    phase: nextPhase,
     waiting_on: "worker_result",
     latest_checkpoint: payload.execution.execution_id,
-    progress_note: `Dispatched subgoal ${subgoal.subgoal_id}`
+    progress_note: isReconInClarification
+      ? `Recon worker dispatched for clarification: ${subgoal.title}`
+      : `Dispatched subgoal ${subgoal.subgoal_id}`
   }));
   await ctx.repositories.subgoals.upsert(transitionSubgoal(subgoal, { state: SubgoalState.DISPATCHED }));
   await ctx.repositories.workers.upsert({
@@ -121,15 +133,50 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
   const settings = await ctx.repositories.loadSettings();
-  if (!execution || !worker || !demand || !subgoal || !demand.operational_objective) {
+  if (!execution || !worker || !demand || !subgoal) {
     logger.warn({ demandId: event.demand_id, subgoalId: event.subgoal_id, executionId: event.execution_id, workerId: event.worker_id }, "忽略执行派发事件，因为必要记录未找到");
     return {};
+  }
+  // recon 子目标在 clarification 阶段可派发，此时 demand.operational_objective 仍为 null。
+  // dispatcher.buildPacket 已对 OO=null 做占位兜底，所以不再强制 OO 必须存在。
+  if (subgoal.kind !== "recon" && !demand.operational_objective) {
+    logger.warn({
+      demandId: demand.demand_id,
+      subgoalId: subgoal.subgoal_id,
+      subgoalKind: subgoal.kind ?? "build"
+    }, "build 类 subgoal 派发时 demand.operational_objective 为 null，使用 dispatcher 占位 OO 兜底");
   }
 
   const adapter = ctx.adapterRegistry.getAdapter(worker.worker_id);
   if (!adapter) {
     logger.error({ workerId: worker.worker_id, executionId: execution.execution_id }, "无法派发执行，因为工作器适配器未注册");
     return {};
+  }
+
+  const memorySnapshot = await ctx.memoryManager.getDispatchMemorySnapshot(ctx.repositories, demand.demand_id);
+  const workspaceGrants = collectWorkspaceGrants(settings, demand);
+
+  // Claude Code worker 跨 subgoal 续接 session：找最近一条带 claude_session_id 的同 demand execution
+  let claudeResumeSessionId: string | null = null;
+  if (worker.adapter_type === "claude_code") {
+    const allExecutions = await ctx.repositories.executions.list();
+    const priors = allExecutions
+      .filter((item) => item.demand_id === demand.demand_id && item.execution_id !== execution.execution_id)
+      .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""));
+    for (const prior of priors) {
+      const meta = (prior.adapter_meta ?? {}) as Record<string, unknown>;
+      const sid = meta.claude_session_id;
+      if (typeof sid === "string" && sid.trim().length > 0) {
+        claudeResumeSessionId = sid;
+        logger.info({
+          demandId: demand.demand_id,
+          executionId: execution.execution_id,
+          priorExecutionId: prior.execution_id,
+          claudeResumeSessionId
+        }, "为 Claude Code 派发注入上一次会话 ID 用于续接");
+        break;
+      }
+    }
   }
 
   const packet = ctx.dispatcher.buildPacket({
@@ -139,7 +186,10 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
     worker,
     workspaceRoot: settings.workspace_root,
     heartbeatSeconds: settings.runtime.heartbeat_interval_seconds,
-    timeoutSeconds: settings.runtime.execution_timeout_seconds
+    timeoutSeconds: settings.runtime.execution_timeout_seconds,
+    memorySnapshot,
+    workspaceGrants,
+    claudeResumeSessionId
   });
 
   const startedAt = nowIso();

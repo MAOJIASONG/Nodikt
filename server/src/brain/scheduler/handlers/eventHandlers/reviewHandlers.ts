@@ -757,3 +757,29 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
     events: [createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_decision" }, { demand_id: demand.demand_id })]
   };
 }
+
+/**
+ * 函数作用：处理归并完成事件。归并副作用已由 onVerificationCompleted 完成，
+ * 本 handler 仅作为通知链路终点便于观测。后续若引入跨需求统计或外部上报，可在此挂副作用。
+ */
+export async function onReconciliationCompleted(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
+  void ctx;
+  const payload = event.payload as {
+    verification_status?: string;
+    mission_completed?: boolean;
+    replan_requested?: boolean;
+    retry_requested?: boolean;
+    decision_id?: string | null;
+  };
+  logger.info({
+    demandId: event.demand_id,
+    subgoalId: event.subgoal_id,
+    executionId: event.execution_id,
+    verificationStatus: payload.verification_status,
+    missionCompleted: payload.mission_completed,
+    replanRequested: payload.replan_requested,
+    retryRequested: payload.retry_requested,
+    decisionId: payload.decision_id ?? null
+  }, "归并完成事件已观测");
+  return {};
+}

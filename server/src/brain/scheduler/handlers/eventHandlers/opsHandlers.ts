@@ -31,6 +31,7 @@ import {
 } from "../../../../domain/index.js";
 import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
+import { collectWorkspaceGrants } from "../../../dispatch/dispatcher/service.js";
 import { chooseExecutionRecovery } from "../../../ops/recoveryPolicy.js";
 import { syncWorkerExecutionSlots } from "../executionRuntime.js";
 import {
@@ -223,6 +224,8 @@ export async function onExecutionTimeoutDetected(event: SchedulerEvent, ctx: Han
     worker: recovery.worker,
     attempt: recovery.nextAttempt
   });
+  const memorySnapshot = await ctx.memoryManager.getDispatchMemorySnapshot(ctx.repositories, demand.demand_id);
+  const workspaceGrants = collectWorkspaceGrants(settings, demand);
   const packet = ctx.dispatcher.buildPacket({
     demand,
     subgoal: retrySubgoal,
@@ -230,7 +233,9 @@ export async function onExecutionTimeoutDetected(event: SchedulerEvent, ctx: Han
     worker: recovery.worker,
     workspaceRoot: settings.workspace_root,
     heartbeatSeconds: settings.runtime.heartbeat_interval_seconds,
-    timeoutSeconds: settings.runtime.execution_timeout_seconds
+    timeoutSeconds: settings.runtime.execution_timeout_seconds,
+    memorySnapshot,
+    workspaceGrants
   });
 
   logger.warn({
@@ -368,4 +373,32 @@ export async function onOpsAlert(event: SchedulerEvent, ctx: HandlerContext): Pr
     message: payload.message,
     severity: payload.severity
   });
+}
+
+/**
+ * 函数作用：处理运维恢复尝试完成事件。
+ * 实际状态推进由 onExecutionTimeoutDetected 完成；本 handler 只作为通知链路终点便于观测。
+ */
+export async function onOpsRecoveryAttempted(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
+  void ctx;
+  const payload = event.payload as {
+    strategy?: string;
+    reason?: string;
+    previous_execution_id?: string;
+    next_execution_id?: string | null;
+    attempt?: number;
+    max_retry_count?: number;
+  };
+  logger.warn({
+    demandId: event.demand_id,
+    subgoalId: event.subgoal_id,
+    workerId: event.worker_id,
+    strategy: payload.strategy,
+    reason: payload.reason,
+    previousExecutionId: payload.previous_execution_id,
+    nextExecutionId: payload.next_execution_id ?? null,
+    attempt: payload.attempt,
+    maxRetryCount: payload.max_retry_count
+  }, "Ops 恢复尝试已观测");
+  return {};
 }

@@ -38,6 +38,7 @@ import {
 import {
   onExecutionTimeoutDetected,
   onOpsAlert,
+  onOpsRecoveryAttempted,
   onOpsRecoveryFailed,
   onWorkerHealthChecked
 } from "./eventHandlers/opsHandlers.js";
@@ -50,6 +51,7 @@ import {
 import {
   onDecisionRequestCreated,
   onDecisionResponseReceived,
+  onReconciliationCompleted,
   onSubgoalRetryRequested,
   onVerificationCompleted
 } from "./eventHandlers/reviewHandlers.js";
@@ -81,6 +83,7 @@ export function createHandlers(): HandlerMap {
     [EventType.WORKER_HEARTBEAT_RECEIVED]: onWorkerHeartbeat,
     [EventType.WORKER_RESULT_RECEIVED]: onWorkerResult,
     [EventType.VERIFICATION_COMPLETED]: onVerificationCompleted,
+    [EventType.RECONCILIATION_COMPLETED]: onReconciliationCompleted,
     [EventType.SUBGOAL_RETRY_REQUESTED]: onSubgoalRetryRequested,
     [EventType.DECISION_REQUEST_CREATED]: onDecisionRequestCreated,
     [EventType.DECISION_RESPONSE_RECEIVED]: onDecisionResponseReceived,
@@ -91,6 +94,7 @@ export function createHandlers(): HandlerMap {
     [EventType.EXECUTION_STOP_REQUESTED]: onExecutionStopRequested,
     [EventType.EXECUTION_TIMEOUT_DETECTED]: onExecutionTimeoutDetected,
     [EventType.WORKER_HEALTH_CHECKED]: onWorkerHealthChecked,
+    [EventType.OPS_RECOVERY_ATTEMPTED]: onOpsRecoveryAttempted,
     [EventType.OPS_RECOVERY_FAILED]: onOpsRecoveryFailed,
     [EventType.OPS_ALERT]: onOpsAlert
   };
