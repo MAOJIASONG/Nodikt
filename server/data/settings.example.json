@@ -1,0 +1,50 @@
+{
+  "version": "v1",
+  "updated_at": "2026-05-16T05:22:20.294Z",
+  "models": {
+    "primary": {
+      "provider": "openai-compatible",
+      "model": "MiniMaxAI/MiniMax-M2.5",
+      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "api_key": "",
+      "enabled": true
+    },
+    "planner": {
+      "provider": "openai-compatible",
+      "model": "MiniMaxAI/MiniMax-M2.5",
+      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "api_key": "",
+      "enabled": true
+    },
+    "verifier": {
+      "provider": "openai-compatible",
+      "model": "MiniMaxAI/MiniMax-M2.5",
+      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "api_key": "",
+      "enabled": true
+    },
+    "ops_backup": {
+      "provider": "openai-compatible",
+      "model": "MiniMaxAI/MiniMax-M2.5",
+      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "api_key": "",
+      "enabled": true
+    }
+  },
+  "workspace_root": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/workspace",
+  "runtime": {
+    "heartbeat_interval_seconds": 30,
+    "execution_timeout_seconds": 600,
+    "max_retry_count": 1
+  },
+  "worker_policy": {
+    "skill_install_scope": "workspace_only"
+  },
+  "default_autonomy_level": "L1",
+  "default_permissions": {
+    "can_modify_files": true,
+    "can_run_commands": true,
+    "can_install_dependencies": false,
+    "can_open_pr": false
+  }
+}
