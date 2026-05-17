@@ -68,6 +68,7 @@ export const subgoalContractSchema = z.object({
   priority: z.number().int().nonnegative(),
   state: z.nativeEnum(SubgoalState),
   planning_round: z.number().int().positive(),
+  kind: z.enum(["build", "recon"]).optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime()
 });
@@ -129,7 +130,7 @@ export const executionSchema = z.object({
 export const workerRegistrationSchema = z.object({
   worker_id: z.string().min(1),
   name: z.string().min(1),
-  adapter_type: z.enum(["codex", "opencode"]),
+  adapter_type: z.enum(["codex", "opencode", "claude_code"]),
   runtime_type: z.enum(["local_command", "http", "websocket"]),
   status: z.nativeEnum(WorkerRegistryStatus),
   max_concurrency: z.number().int().positive(),
@@ -222,6 +223,12 @@ export const settingsSchema = z.object({
     })
   }),
   workspace_root: z.string().min(1),
+  workspace_grants: z.array(z.object({
+    path: z.string().min(1),
+    granted_at: z.string(),
+    granted_by: z.string().optional(),
+    note: z.string().optional()
+  })).optional(),
   runtime: z.object({
     heartbeat_interval_seconds: z.number().int().positive(),
     execution_timeout_seconds: z.number().int().positive(),

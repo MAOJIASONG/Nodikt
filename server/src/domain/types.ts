@@ -30,15 +30,15 @@ import {
 } from "./enums.js";
 
 export type AutonomyLevel = "L0" | "L1" | "L2" | "L3" | "L4";
-export type AdapterType = "codex" | "opencode";
+export type AdapterType = "codex" | "opencode" | "claude_code";
 export type RuntimeType = "local_command" | "http" | "websocket";
 export type ArtifactType = "git_commit" | "pull_request" | "file_bundle" | "structured_output_json";
 export type ArtifactBackend = "git" | "filesystem";
 export type DecisionSource = "scheduler" | "worker" | "verifier" | "ops";
 export type HeartbeatSource = "synthetic_timer" | "event_stream" | "hook" | "status_poll";
 export type InstallScope = "workspace_only" | "disabled";
-export type EventReason = "initial_plan" | "replan_after_result" | "replan_after_decision" | "resume";
-export type InputKind = "initial_demand" | "clarification_reply" | "decision_note" | "control_action";
+export type EventReason = "initial_plan" | "replan_after_result" | "replan_after_decision" | "resume" | "user_triggered" | "recon_completed";
+export type InputKind = "initial_demand" | "clarification_reply" | "decision_note" | "control_action" | "recon_findings";
 export type LlmRole = "primary" | "planner" | "verifier" | "ops_backup";
 
 export interface ArtifactRef {
@@ -72,6 +72,8 @@ export interface OperationalObjective {
   termination_conditions?: string[];
 }
 
+export type SubgoalKind = "build" | "recon";
+
 export interface SubgoalContract {
   subgoal_id: string;
   demand_id: string;
@@ -86,8 +88,30 @@ export interface SubgoalContract {
   priority: number;
   state: SubgoalState;
   planning_round: number;
+  /**
+   * 子目标种类：
+   * - "build"（默认）：执行型，目标是产出 artifact / 状态变更。
+   * - "recon"：侦察型，只读不写，目标是收集信息让下一轮 planner 决策。
+   * 兼容历史数据：缺省视为 "build"。
+   */
+  kind?: SubgoalKind;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * 类型作用：路径授权条目，描述 worker 可以写入的某条额外路径以及来源。
+ *
+ * 字段说明：
+ * - path：绝对路径或目录路径。worker 写入此路径或其子路径都视为已授权。
+ * - granted_at：授权时间戳。
+ * - granted_by：来源描述（"user_persistent" / "user_demand_scope" / "scheduler" 等）。
+ */
+export interface WorkspaceGrant {
+  path: string;
+  granted_at: string;
+  granted_by?: string;
+  note?: string;
 }
 
 export interface Demand {
@@ -218,6 +242,11 @@ export interface Settings {
     ops_backup: ModelConfig;
   };
   workspace_root: string;
+  /**
+   * 用户级永久授权的额外可写路径列表。worker 默认可以写到 workspace_root，
+   * 这里追加的路径在所有 demand 中都生效。
+   */
+  workspace_grants?: WorkspaceGrant[];
   runtime: {
     heartbeat_interval_seconds: number;
     execution_timeout_seconds: number;
@@ -344,7 +373,12 @@ export interface CollectionFile<TItem> {
 export interface UserInputReceivedPayload {
   input_text: string;
   input_kind: InputKind;
-  source: "ui";
+  /**
+   * 输入来源：
+   * - "ui"：用户在 web 界面提交
+   * - "scheduler"：系统内部回灌（典型场景：recon worker 完成后把发现回写给 clarifier 重新决策）
+   */
+  source: "ui" | "scheduler";
   session_tag?: string | null;
 }
 
@@ -501,7 +535,7 @@ export type EventPayloadMap = {
   [EventType.SUBGOAL_RETRY_REQUESTED]: SubgoalRetryRequestedPayload;
   [EventType.DECISION_REQUEST_CREATED]: DecisionRequestCreatedPayload;
   [EventType.DECISION_RESPONSE_RECEIVED]: DecisionResponseReceivedPayload;
-  [EventType.REPLAN_REQUESTED]: { reason: EventReason };
+  [EventType.REPLAN_REQUESTED]: { reason: EventReason; note?: string | null; source?: string };
   [EventType.DEMAND_PAUSED]: DemandControlPayload;
   [EventType.DEMAND_RESUMED]: DemandControlPayload;
   [EventType.DEMAND_CANCELLED]: DemandControlPayload;
