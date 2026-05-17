@@ -32,10 +32,26 @@ import {
 import { createLogger } from "../../../logger.js";
 import { LlmClient, LlmInvocationError } from "../llm/index.js";
 
+/**
+ * Clarifier 三档判断结果：
+ * - NEEDS_CLARIFICATION：缺的是用户偏好/决定/目标，只能问用户。
+ * - NEEDS_RECON：缺的是事实/文件/状态，可以派 read-only worker 自己去看。
+ * - READY：信息足够，可以编译出 operational_objective 进入 planner。
+ */
+export type ReconSubgoalDraft = {
+  title: string;
+  objective: string;
+  success_criteria: string[];
+  failure_criteria?: string[];
+  constraints?: string[];
+};
+
 type ClarifiedDemandResult = {
-  status: "NEEDS_CLARIFICATION" | "READY";
+  status: "NEEDS_CLARIFICATION" | "NEEDS_RECON" | "READY";
   display_title?: string;
   clarification_question?: string;
+  recon_subgoals?: ReconSubgoalDraft[];
+  recon_rationale?: string;
   clarified_demand?: string;
   operational_objective?: OperationalObjective;
   clarification_summary?: string;

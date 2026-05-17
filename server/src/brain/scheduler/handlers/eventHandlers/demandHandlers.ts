@@ -26,8 +26,11 @@ import {
   EventType,
   HandlerResult,
   SchedulerEvent,
+  SubgoalContract,
+  SubgoalState,
   nowIso
 } from "../../../../domain/index.js";
+import type { ReconSubgoalDraft } from "../../../engines/planner/service.js";
 import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
 import {
@@ -41,6 +44,58 @@ import {
 import { listActiveExecutionsForDemand } from "../executionRuntime.js";
 
 const logger = createLogger("handlers:demand");
+
+/**
+ * Clarifier 阶段允许的 recon 派发上限（per demand）。超过后强制降级为 NEEDS_CLARIFICATION，
+ * 避免 NEEDS_RECON ↔ recon ↔ findings ↔ clarifier 死循环。
+ */
+const MAX_CLARIFY_RECON_ROUNDS = 3;
+
+function readReconRoundsUsed(metadata: Record<string, unknown> | undefined): number {
+  if (!metadata) return 0;
+  const raw = metadata.recon_rounds_used;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 0;
+}
+
+/**
+ * 函数作用：把 clarifier 给出的 recon_subgoals 草稿物化为可调度的 SubgoalContract 列表。
+ * clarification 阶段还没有正式 planning_round，临时给 1。
+ */
+function materializeReconSubgoals(
+  demandId: string,
+  drafts: ReconSubgoalDraft[],
+  timestamp: string
+): SubgoalContract[] {
+  return drafts.map((draft, index) => ({
+    subgoal_id: createId("subgoal"),
+    demand_id: demandId,
+    title: draft.title.trim(),
+    objective: draft.objective.trim(),
+    success_criteria: draft.success_criteria,
+    failure_criteria: draft.failure_criteria ?? [],
+    constraints: draft.constraints ?? [],
+    budget: { max_steps: 12, max_minutes: 5 },
+    deliverables: ["structured_output_json"],
+    dependencies: [],
+    priority: index + 1,
+    state: SubgoalState.PLANNED,
+    planning_round: 1,
+    kind: "recon",
+    created_at: timestamp,
+    updated_at: timestamp
+  }));
+}
+
+function describeReconForUser(drafts: ReconSubgoalDraft[], rationale?: string): string {
+  const lines = [
+    rationale ? rationale : "Let me look around the target first so I plan accurately."
+  ];
+  drafts.forEach((draft, i) => {
+    lines.push(`  ${i + 1}. ${draft.title} — ${draft.objective}`);
+  });
+  lines.push("(Read-only inspection — I won't modify anything. I'll come back with what I found.)");
+  return lines.join("\n");
+}
 
 /**
  * 函数作用：处理用户输入事件，创建新需求或更新既有需求会话。
@@ -64,10 +119,11 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
       rawInput: payload.input_text,
       settings
     });
-    await ctx.repositories.demands.upsert({
+    // 三档分流：NEEDS_CLARIFICATION（问用户）/ NEEDS_RECON（派 read-only worker 探）/ READY（进 planner）
+    const baseDemand = {
       demand_id: demandId,
       title: clarification.display_title?.slice(0, 60) || payload.input_text.slice(0, 80),
-      type: "project",
+      type: "project" as const,
       initial_input: payload.input_text,
       clarified_demand: null,
       operational_objective: null,
@@ -80,51 +136,94 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
       active_decision_id: null,
       tags: [],
       created_at: timestamp,
-      updated_at: timestamp,
-      metadata: clarification.status === "NEEDS_CLARIFICATION"
-        ? {
-            runtime_session: {
-              phase: DemandPhase.ALIGNMENT,
-              waiting_on: "user_clarification",
-              frontier_subgoal_ids: [],
-              latest_checkpoint: event.event_id,
-              progress_note: "Initial demand needs clarification",
-              last_progress_at: timestamp
-            },
-            clarification_question: clarification.clarification_question,
-            conversation_history: [
-              { role: "user", content: payload.input_text, created_at: timestamp },
-              {
-                role: "assistant",
-                content: clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.",
-                created_at: timestamp
-              }
-            ]
-          }
-        : {
-            runtime_session: {
-              phase: DemandPhase.ALIGNMENT,
-              waiting_on: null,
-              frontier_subgoal_ids: [],
-              latest_checkpoint: event.event_id,
-              progress_note: "Initial demand clarified",
-              last_progress_at: timestamp
-            },
-            conversation_history: [
-              { role: "user", content: payload.input_text, created_at: timestamp },
-              {
-                role: "assistant",
-                content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
-                created_at: timestamp
-              }
-            ]
-          }
-    });
+      updated_at: timestamp
+    };
+
+    if (clarification.status === "NEEDS_RECON") {
+      const reconDescription = describeReconForUser(clarification.recon_subgoals!, clarification.recon_rationale);
+      await ctx.repositories.demands.upsert({
+        ...baseDemand,
+        metadata: {
+          runtime_session: {
+            phase: DemandPhase.ALIGNMENT,
+            waiting_on: "recon_worker",
+            frontier_subgoal_ids: [],
+            latest_checkpoint: event.event_id,
+            progress_note: "Recon dispatched to inform clarification",
+            last_progress_at: timestamp
+          },
+          recon_in_progress: true,
+          recon_rounds_used: 1,
+          conversation_history: [
+            { role: "user", content: payload.input_text, created_at: timestamp },
+            { role: "assistant", content: reconDescription, created_at: timestamp }
+          ]
+        }
+      });
+      const reconSubgoals = materializeReconSubgoals(demandId, clarification.recon_subgoals!, timestamp);
+      logger.info({
+        demandId,
+        reconSubgoalCount: reconSubgoals.length,
+        titles: reconSubgoals.map((sg) => sg.title)
+      }, "初始需求选择派 recon worker 调研，不打扰用户");
+      return {
+        events: reconSubgoals.map((sg) => createEvent(
+          EventType.SUBGOAL_CREATED,
+          { subgoal_contract: sg, planning_round: 1, source: "planner" as const },
+          { demand_id: demandId, subgoal_id: sg.subgoal_id }
+        ))
+      };
+    }
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
+      await ctx.repositories.demands.upsert({
+        ...baseDemand,
+        metadata: {
+          runtime_session: {
+            phase: DemandPhase.ALIGNMENT,
+            waiting_on: "user_clarification",
+            frontier_subgoal_ids: [],
+            latest_checkpoint: event.event_id,
+            progress_note: "Initial demand needs clarification",
+            last_progress_at: timestamp
+          },
+          clarification_question: clarification.clarification_question,
+          conversation_history: [
+            { role: "user", content: payload.input_text, created_at: timestamp },
+            {
+              role: "assistant",
+              content: clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.",
+              created_at: timestamp
+            }
+          ]
+        }
+      });
       logger.info({ demandId }, "初始需求仍需要用户补充澄清");
       return {};
     }
+
+    // READY
+    await ctx.repositories.demands.upsert({
+      ...baseDemand,
+      metadata: {
+        runtime_session: {
+          phase: DemandPhase.ALIGNMENT,
+          waiting_on: null,
+          frontier_subgoal_ids: [],
+          latest_checkpoint: event.event_id,
+          progress_note: "Initial demand clarified",
+          last_progress_at: timestamp
+        },
+        conversation_history: [
+          { role: "user", content: payload.input_text, created_at: timestamp },
+          {
+            role: "assistant",
+            content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
+            created_at: timestamp
+          }
+        ]
+      }
+    });
 
     logger.info({ demandId }, "初始需求澄清已完成");
     return {
@@ -144,15 +243,21 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     };
   }
 
-  if (payload.input_kind === "clarification_reply" && event.demand_id) {
+  // clarification_reply：用户的回复继续 clarification
+  // recon_findings：reviewHandlers 把 recon worker 的发现作为新一轮 clarification 输入回灌（source=scheduler）
+  if (
+    (payload.input_kind === "clarification_reply" || payload.input_kind === "recon_findings")
+    && event.demand_id
+  ) {
     const demand = await ctx.repositories.demands.getById(event.demand_id);
     if (!demand) {
-      logger.warn({ demandId: event.demand_id }, "忽略澄清回复，因为未找到对应需求");
+      logger.warn({ demandId: event.demand_id, inputKind: payload.input_kind }, "忽略澄清/findings 回复，因为未找到对应需求");
       return {};
     }
+    const isReconFindings = payload.input_kind === "recon_findings";
     const settings = await ctx.repositories.loadSettings();
     const timestamp = nowIso();
-    logger.info({ demandId: demand.demand_id }, "正在使用用户回复继续澄清需求");
+    logger.info({ demandId: demand.demand_id, inputKind: payload.input_kind }, "正在使用回复内容继续澄清需求");
     const clarification = await ctx.planner.clarifyDemand({
       rawInput: [
         `Original demand: ${demand.initial_input}`,
@@ -160,10 +265,86 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         demand.metadata?.clarification_question
           ? `Previous clarification question: ${String(demand.metadata.clarification_question)}`
           : "",
-        `User clarification reply: ${payload.input_text}`
+        isReconFindings
+          ? `Recon findings from worker (system-generated, NOT a user message):\n${payload.input_text}`
+          : `User clarification reply: ${payload.input_text}`
       ].filter(Boolean).join("\n"),
       settings
     });
+
+    // 把这一轮的输入写进对话历史。来自 recon worker 用 "assistant" 前缀标识便于前端区分
+    const incomingTurn = isReconFindings
+      ? {
+          role: "assistant" as const,
+          content: `[Recon findings]\n${payload.input_text}`,
+          created_at: timestamp
+        }
+      : {
+          role: "user" as const,
+          content: payload.input_text,
+          created_at: timestamp
+        };
+
+    if (clarification.status === "NEEDS_RECON") {
+      // Safety net：到达 recon 轮数上限就强制降级问用户
+      const usedRounds = readReconRoundsUsed(demand.metadata);
+      if (usedRounds >= MAX_CLARIFY_RECON_ROUNDS) {
+        const fallbackQuestion = `I've already dispatched ${usedRounds} round${usedRounds > 1 ? "s" : ""} of read-only investigation and still need more clarity. Could you tell me directly:\n\n- ${clarification.recon_rationale ?? "What I still need to know"}\n\n(${clarification.recon_subgoals?.slice(0, 2).map((sg) => sg.title).join(" / ") ?? "the remaining gap"})`;
+        logger.warn({
+          demandId: demand.demand_id,
+          usedRounds,
+          maxRounds: MAX_CLARIFY_RECON_ROUNDS
+        }, "Recon 轮数达上限，强制降级为问用户");
+        await ctx.repositories.demands.upsert(transitionDemand(demand, {
+          title: clarification.display_title?.slice(0, 60) || demand.title,
+          metadata: {
+            ...appendConversationTurns(demand.metadata, [
+              incomingTurn,
+              { role: "assistant", content: fallbackQuestion, created_at: timestamp }
+            ]),
+            clarification_question: fallbackQuestion,
+            recon_in_progress: false
+          }
+        }, {
+          phase: DemandPhase.ALIGNMENT,
+          waiting_on: "user_clarification",
+          progress_note: `Recon budget exhausted (${usedRounds}/${MAX_CLARIFY_RECON_ROUNDS}), asking user`
+        }));
+        return {};
+      }
+
+      const reconDescription = describeReconForUser(clarification.recon_subgoals!, clarification.recon_rationale);
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        title: clarification.display_title?.slice(0, 60) || demand.title,
+        metadata: {
+          ...appendConversationTurns(demand.metadata, [
+            incomingTurn,
+            { role: "assistant", content: reconDescription, created_at: timestamp }
+          ]),
+          clarification_question: null,
+          recon_in_progress: true,
+          recon_rounds_used: usedRounds + 1
+        }
+      }, {
+        phase: DemandPhase.ALIGNMENT,
+        waiting_on: "recon_worker",
+        progress_note: `Recon dispatched to inform clarification (round ${usedRounds + 1}/${MAX_CLARIFY_RECON_ROUNDS})`
+      }));
+      const reconSubgoals = materializeReconSubgoals(demand.demand_id, clarification.recon_subgoals!, timestamp);
+      logger.info({
+        demandId: demand.demand_id,
+        reconSubgoalCount: reconSubgoals.length,
+        titles: reconSubgoals.map((sg) => sg.title),
+        round: usedRounds + 1
+      }, "澄清阶段决定继续派 recon worker 调研");
+      return {
+        events: reconSubgoals.map((sg) => createEvent(
+          EventType.SUBGOAL_CREATED,
+          { subgoal_contract: sg, planning_round: 1, source: "planner" as const },
+          { demand_id: demand.demand_id, subgoal_id: sg.subgoal_id }
+        ))
+      };
+    }
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
       logger.info({ demandId: demand.demand_id }, "澄清回复仍需要更多用户输入");
@@ -171,14 +352,15 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         title: clarification.display_title?.slice(0, 60) || demand.title,
         metadata: {
           ...appendConversationTurns(demand.metadata, [
-            { role: "user", content: payload.input_text, created_at: timestamp },
+            incomingTurn,
             {
               role: "assistant",
               content: clarification.clarification_question ?? "Please provide the remaining missing execution context.",
               created_at: timestamp
             }
           ]),
-          clarification_question: clarification.clarification_question
+          clarification_question: clarification.clarification_question,
+          recon_in_progress: false
         }
       }, {
         phase: DemandPhase.ALIGNMENT,
@@ -193,14 +375,15 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
       title: clarification.display_title?.slice(0, 60) || demand.title,
       metadata: {
         ...appendConversationTurns(demand.metadata, [
-          { role: "user", content: payload.input_text, created_at: timestamp },
+          incomingTurn,
           {
             role: "assistant",
             content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
             created_at: timestamp
           }
         ]),
-        clarification_question: null
+        clarification_question: null,
+        recon_in_progress: false
       }
     }, {
       phase: DemandPhase.ALIGNMENT,
