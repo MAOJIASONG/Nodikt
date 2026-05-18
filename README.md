@@ -259,8 +259,8 @@ bash start.sh
 
 启动成功后：
 
-- 🖥️ **Web 控制台**：http://localhost:5173
-- 🧠 **Brain API**：http://localhost:3001
+- 🖥️ **Web 控制台**：http://localhost:12400 （默认 `WEB_PORT`，可在 `.env` 中覆盖）
+- 🧠 **Brain API**：http://localhost:3001 （默认 `SERVER_PORT`，可在 `.env` 中覆盖）
 
 ### 常用命令
 

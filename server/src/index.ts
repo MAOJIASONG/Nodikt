@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   const appContext = await createApp();
   await ensureDefaultWorkers(appContext);
   const timer = appContext.opsMonitor.start(appContext.eventBus);
-  const port = Number(process.env.PORT ?? 3001);
+  const port = Number(process.env.SERVER_PORT ?? 3001);
 
   appContext.server.listen(port, () => {
     console.log(`Nodikt server listening on http://localhost:${port}`);

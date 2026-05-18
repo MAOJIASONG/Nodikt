@@ -5,8 +5,8 @@
 #   1. 从项目根 .env 加载环境变量（若存在），导出给所有子进程
 #   2. 先做一次 server 全量编译，确保 dist/index.js 存在
 #   3. 后台跑 tsc --watch（server 增量编译）
-#   4. 后台跑 node dist/index.js（HTTP/WS server, 默认 :3001）
-#   5. 前台跑 vite dev（web, 默认 :5173）。Ctrl+C 退出时自动 kill 两个后台进程
+#   4. 后台跑 node dist/index.js（HTTP/WS server, SERVER_PORT, 默认 :3001）
+#   5. 前台跑 vite dev（web, WEB_PORT, 默认 :12400）。Ctrl+C 退出时自动 kill 两个后台进程
 #
 # 注意：
 #   - tsc --watch 只重编译 dist，不会自动重启 node。改完 server 代码后两种做法：
@@ -60,6 +60,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[start-dev] tsc=$TSC_PID  node=$NODE_PID"
-echo "[start-dev] starting vite dev (web :5173). Ctrl+C 退出整条链路。"
+echo "[start-dev] starting vite dev (web :${WEB_PORT:-12400}). Ctrl+C 退出整条链路。"
 echo
 npm run dev:web

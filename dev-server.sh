@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dev-server.sh — Terminal 2：node 后端
-# 跑 dist/index.js，监听 PORT（默认 3001），加载根目录 .env。
+# 跑 dist/index.js，监听 SERVER_PORT（默认 3001），加载根目录 .env。
 # 注意：tsc --watch 不会触发它自动重启。改完 server 代码后回到这个终端 Ctrl+C 再次执行本脚本。
 
 set -euo pipefail
@@ -21,5 +21,5 @@ if [[ ! -f server/dist/index.js ]]; then
   npm run build -w server
 fi
 
-echo "[dev-server] starting node dist/index.js on PORT=${PORT:-3001} (Ctrl+C 退出)"
+echo "[dev-server] starting node dist/index.js on SERVER_PORT=${SERVER_PORT:-3001} (Ctrl+C 退出)"
 exec npm start -w server

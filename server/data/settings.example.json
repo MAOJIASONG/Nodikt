@@ -5,33 +5,33 @@
     "primary": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
-      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "base_url": "https://xxxx/v1",
       "api_key": "",
       "enabled": true
     },
     "planner": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
-      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "base_url": "https://xxxx/v1",
       "api_key": "",
       "enabled": true
     },
     "verifier": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
-      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "base_url": "https://xxxx/v1",
       "api_key": "",
       "enabled": true
     },
     "ops_backup": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
-      "base_url": "https://siflow-longmen.siflow.cn/siflow/longmen/skyinfer/xdma/longmen-minimax-m25-20260305/v1",
+      "base_url": "https://xxxx/v1",
       "api_key": "",
       "enabled": true
     }
   },
-  "workspace_root": "/volume/coder/users/yzli02/swwu/jincheng/framework-nodkit_v0.3.1/server/workspace",
+  "workspace_root": "xxx/workspace",
   "runtime": {
     "heartbeat_interval_seconds": 30,
     "execution_timeout_seconds": 600,

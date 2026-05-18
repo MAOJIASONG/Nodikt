@@ -18,8 +18,20 @@ REPO_ROOT="$(pwd)"
 RUN_DIR="$REPO_ROOT/.run"
 mkdir -p "$RUN_DIR"
 
-PORT_SERVER="${PORT:-3001}"
-PORT_WEB=5173
+# 加载 .env（如存在），让 SERVER_PORT / WEB_PORT 等被 shell 和后续子进程看到。
+# 首次运行 .env 还没生成时跳过，走默认值。
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+PORT_SERVER="${SERVER_PORT:-3001}"
+PORT_WEB="${WEB_PORT:-12400}"
+# 显式导出，确保 npm start / npm run dev:web 等子进程读得到（vite.config.ts 用）
+export SERVER_PORT="$PORT_SERVER"
+export WEB_PORT="$PORT_WEB"
 
 C_GREEN=$'\033[0;32m'
 C_YELLOW=$'\033[0;33m'
