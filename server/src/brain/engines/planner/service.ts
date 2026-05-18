@@ -72,6 +72,11 @@ type FrontierPlanResult = {
     failure_criteria: string[];
     constraints: string[];
     deliverables: unknown[];
+    /**
+     * "build"（默认）：执行型，产出 artifact/状态变更。
+     * "recon"：侦察型，只读不写。模型在信息不足以编出 build plan 时应输出 recon。
+     */
+    kind?: "build" | "recon";
   }>;
   mission_state_summary: string;
   episodic_trace_summary: string;
@@ -195,18 +200,58 @@ export class PlannerService {
         systemPrompt: [
           "You are the clarification assistant for Nodikt v1.",
           "Return valid JSON only.",
-          "First decide whether the demand is sufficiently clarified.",
           "Treat clarification as a short conversation inside a demand, not as one-shot form filling.",
-          "Ask concise, high-signal follow-up questions when key execution context is still missing.",
-          "Prefer one focused clarification question at a time.",
-          "If this is a coding or repository task and the project/workspace path is missing or ambiguous, you must ask for it before marking READY.",
           "Do not change the user's goal semantics.",
-          "Schema:",
+          "",
+          "## You have THREE possible decisions",
+          "",
+          '1. "NEEDS_CLARIFICATION" — Ask the user. Use this ONLY when the gap is something only the user knows:',
+          "   their goals, preferences, business choices, brand-new artifacts they want, decisions you cannot make for them.",
+          "",
+          '2. "NEEDS_RECON" — Dispatch a read-only worker to investigate. Use this when the gap is',
+          "   FACTUAL information that a worker can observe directly without bothering the user.",
+          "   The recon worker has access to ANY read-only / observational tool: local file inspection",
+          "   (Read / Glob / Grep / ls / cat / git status), Web lookup (WebFetch / WebSearch),",
+          "   read-only HTTP / API queries, and even delegated sub-investigations (Task).",
+          "   It cannot write or mutate anything — locally or remotely.",
+          "",
+          "   DO NOT ask the user for facts that a worker can simply look up. Asking the user for things",
+          "   the system can observe itself is the wrong choice.",
+          "",
+          "   Examples that should be NEEDS_RECON:",
+          "     * \"Refactor this repo\" without specifying which files — recon the repo structure.",
+          "     * \"The tank game in server/workspace\" — recon the directory to see what's there.",
+          "     * \"Add a test for the auth module\" — recon to find where the auth module lives.",
+          "     * \"Migrate to React 19\" — recon official React 19 migration docs (WebFetch / WebSearch).",
+          "     * \"Use the latest OpenAI API\" — recon the current API spec online.",
+          "     * Anything that asks for behavior consistent with an EXTERNAL reference whose current state we should check.",
+          "",
+          "   When choosing NEEDS_RECON, output 1-3 `recon_subgoals`. For each, write a concrete read-only objective",
+          "   that hints at what kind of inspection is needed.",
+          "",
+          '3. "READY" — Information is sufficient. Compile an operational_objective and move to planning.',
+          "",
+          "## Rules of thumb",
+          "- If a fact COULD be inspected (path exists, file content readable, online doc) but the user has not been asked yet, prefer NEEDS_RECON over NEEDS_CLARIFICATION.",
+          "- Only fall back to NEEDS_CLARIFICATION when the user has not specified a path/target at all, or when the question is genuinely a preference.",
+          "- Never combine NEEDS_CLARIFICATION and NEEDS_RECON in the same response — choose the most informative single next step.",
+          "",
+          "## Schema",
           JSON.stringify({
-            status: "NEEDS_CLARIFICATION | READY",
+            status: "NEEDS_CLARIFICATION | NEEDS_RECON | READY",
             display_title: "short product-style title, ideally 3-8 words",
-            clarification_question: "string when clarification is needed",
-            clarified_demand: "string when ready",
+            clarification_question: "string — set when status is NEEDS_CLARIFICATION",
+            recon_subgoals: [
+              {
+                title: "Brief title for what to inspect",
+                objective: "Concrete read-only task, e.g. 'List server/workspace contents and read top-level files'",
+                success_criteria: ["What information must be returned"],
+                failure_criteria: ["Optional"],
+                constraints: ["Optional, e.g. 'Do not read files larger than 200KB'"]
+              }
+            ],
+            recon_rationale: "One short sentence explaining why recon is preferable to asking the user",
+            clarified_demand: "string — set when status is READY",
             operational_objective: {
               objective: "string",
               acceptance_criteria: ["string"],
@@ -214,7 +259,7 @@ export class PlannerService {
               non_goals: ["string"],
               termination_conditions: ["string"]
             },
-            clarification_summary: "string when ready"
+            clarification_summary: "string — set when status is READY"
           })
         ].join("\n"),
         userPrompt: `User demand:\n${input.rawInput}`
@@ -224,10 +269,24 @@ export class PlannerService {
         throw error;
       }
       logger.warn({ err: error }, "Planner clarification JSON failed; falling back to user clarification");
+      const detail = (error.message ?? "").slice(0, 300);
+      const isAuth = /\b401\b|invalid[_ ]?api[_ ]?key|invalid access token|token expired|unauthor/i.test(detail);
+      const isQuota = /\b429\b|rate[_ ]?limit|quota|insufficient_quota/i.test(detail);
+      const isNetwork = /ECONN|ENOTFOUND|ETIMEDOUT|abort|fetch failed|network/i.test(detail);
+      let prefix = "Planner LLM call failed";
+      if (isAuth) {
+        prefix = "Planner LLM rejected the API key (401 / invalid token). Update Settings → models with a fresh key";
+      } else if (isQuota) {
+        prefix = "Planner LLM hit a rate limit / quota (429). Wait or switch model in Settings";
+      } else if (isNetwork) {
+        prefix = "Planner LLM call could not reach the model endpoint (network / timeout). Check base_url and network";
+      } else if (/not valid JSON|No JSON object found|returned empty/i.test(detail)) {
+        prefix = "Planner LLM returned no parseable JSON. Lower temperature or pick a JSON-capable model";
+      }
       return {
         status: "NEEDS_CLARIFICATION",
         display_title: input.rawInput.trim().slice(0, 60) || "New Demand",
-        clarification_question: "The planner model did not return a parseable structured response. Please provide the target project path, expected output, and key constraints so I can continue."
+        clarification_question: `${prefix}. Underlying error: ${detail}`
       };
     }
 
@@ -236,6 +295,34 @@ export class PlannerService {
         status: "NEEDS_CLARIFICATION",
         display_title: result.display_title?.trim(),
         clarification_question: result.clarification_question?.trim() || "Please provide the missing project/workspace path and key constraints."
+      };
+    }
+
+    if (result.status === "NEEDS_RECON") {
+      const rawSubgoals = Array.isArray(result.recon_subgoals) ? result.recon_subgoals : [];
+      const cleanedSubgoals = rawSubgoals
+        .filter((sg): sg is ReconSubgoalDraft => Boolean(sg && typeof sg === "object" && sg.title && sg.objective))
+        .slice(0, 3)
+        .map((sg) => ({
+          title: sg.title.trim(),
+          objective: sg.objective.trim(),
+          success_criteria: normalizeStringArray(sg.success_criteria),
+          failure_criteria: normalizeStringArray(sg.failure_criteria ?? []),
+          constraints: normalizeStringArray(sg.constraints ?? [])
+        }));
+      if (cleanedSubgoals.length === 0) {
+        logger.warn({ raw: result }, "Clarifier 标记 NEEDS_RECON 但未提供有效的 recon_subgoals，降级为问用户");
+        return {
+          status: "NEEDS_CLARIFICATION",
+          display_title: result.display_title?.trim(),
+          clarification_question: "Need more information to proceed but couldn't determine what to inspect. Please specify the target path or what you'd like me to check."
+        };
+      }
+      return {
+        status: "NEEDS_RECON",
+        display_title: result.display_title?.trim(),
+        recon_subgoals: cleanedSubgoals,
+        recon_rationale: result.recon_rationale?.trim() ?? "Investigating environment to plan accurately"
       };
     }
 
@@ -302,6 +389,29 @@ export class PlannerService {
           "If re-planning after a failed, partial, blocked, or unverifiable result, address the concrete gap or blocker instead of restarting the same path.",
           "Respect accepted progress and existing artifacts mentioned in recent events or memory.",
           "Do not mutate the demand objective.",
+          "",
+          "## Subgoal kinds — IMPORTANT",
+          'Every frontier subgoal has a "kind" field:',
+          '  - "build" (default): execute the work, produce artifacts (files, code, structured outputs).',
+          '  - "recon": read-only investigation. The worker MUST NOT write or modify anything.',
+          "    It MAY use any read-only tool: file inspection (Read / Glob / Grep / ls / cat / git status),",
+          "    Web / documentation lookup (WebFetch / WebSearch / curl GET), read-only third-party API queries,",
+          "    and delegated sub-investigation (Task).",
+          "",
+          "When to emit recon subgoals:",
+          "- The demand mentions an existing target you have NOT inspected yet and cannot confidently plan around",
+          "  without knowing its structure / dependencies / state (a local repo, a remote API, a published spec, etc.).",
+          "- Acceptance criteria reference an EXTERNAL fact whose current value you should look up.",
+          "- The user asks to modify/refactor a specific file or module whose exact location is unclear.",
+          "",
+          "When NOT to emit recon:",
+          "- The demand is to create something from scratch in a new directory with no external dependencies.",
+          "- You already have enough information from prior recon results (visible in runtime context).",
+          "- The task is trivial / well-understood.",
+          "",
+          "Do NOT mix recon and build subgoals in the same frontier. Either all 'recon' (future round becomes 'build')",
+          "OR all 'build' (enough info already).",
+          "",
           "Schema:",
           JSON.stringify({
             overall_plan_outline: [
@@ -320,7 +430,8 @@ export class PlannerService {
                 success_criteria: ["string"],
                 failure_criteria: ["string"],
                 constraints: ["string"],
-                deliverables: ["file_bundle"]
+                deliverables: ["file_bundle"],
+                kind: "build | recon"
               }
             ],
             mission_state_summary: "string",
@@ -348,26 +459,35 @@ export class PlannerService {
 
     const timestamp = nowIso();
     const frontierSubgoals = Array.isArray(result.frontier_subgoals) ? result.frontier_subgoals : [];
-    const subgoals: SubgoalContract[] = frontierSubgoals.slice(0, 3).map((item, index) => ({
-      subgoal_id: createId("subgoal"),
-      demand_id: demand.demand_id,
-      title: item.title.trim(),
-      objective: item.objective.trim(),
-      success_criteria: normalizeStringArray(item.success_criteria),
-      failure_criteria: normalizeStringArray(item.failure_criteria),
-      constraints: normalizeStringArray(item.constraints),
-      budget: {
-        max_steps: 20,
-        max_minutes: 15
-      },
-      deliverables: normalizeDeliverables(item.deliverables),
-      dependencies: [],
-      priority: index + 1,
-      state: SubgoalState.PLANNED,
-      planning_round: planningRound,
-      created_at: timestamp,
-      updated_at: timestamp
-    }));
+    const subgoals: SubgoalContract[] = frontierSubgoals.slice(0, 3).map((item, index) => {
+      const kind: "build" | "recon" = item.kind === "recon" ? "recon" : "build";
+      const deliverables = kind === "recon"
+        ? (normalizeDeliverables(item.deliverables).includes("structured_output_json")
+            ? normalizeDeliverables(item.deliverables)
+            : ["structured_output_json" as const])
+        : normalizeDeliverables(item.deliverables);
+      return {
+        subgoal_id: createId("subgoal"),
+        demand_id: demand.demand_id,
+        title: item.title.trim(),
+        objective: item.objective.trim(),
+        success_criteria: normalizeStringArray(item.success_criteria),
+        failure_criteria: normalizeStringArray(item.failure_criteria),
+        constraints: normalizeStringArray(item.constraints),
+        budget: {
+          max_steps: kind === "recon" ? 12 : 20,
+          max_minutes: kind === "recon" ? 5 : 15
+        },
+        deliverables,
+        dependencies: [],
+        priority: index + 1,
+        state: SubgoalState.PLANNED,
+        planning_round: planningRound,
+        kind,
+        created_at: timestamp,
+        updated_at: timestamp
+      };
+    });
 
     if (subgoals.length === 0) {
       throw new Error("Planner returned no frontier subgoals");

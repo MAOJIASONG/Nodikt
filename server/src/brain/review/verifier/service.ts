@@ -109,7 +109,37 @@ export class VerifierService {
       };
     }
 
-    // DONE or PARTIAL: run LLM verification
+    // recon 子目标走专用验证：它没有文件 artifact（产物是发现文本）
+    if (subgoal.kind === "recon") {
+      logger.info({ subgoalId, executionId: workerResult.execution_id, criteriaCount: subgoal.success_criteria.length }, "调用 LLM 验证 recon 发现");
+      try {
+        const llmResult = await this.runReconLlmVerification(subgoal, workerResult, settings);
+        const result = this.buildReconResultFromLlm(subgoalId, workerResult, llmResult);
+        logger.info(
+          { subgoalId, executionId: workerResult.execution_id, verifiedStatus: result.verified_status, gap: result.gap, outcomeConsistent: llmResult.outcome_consistent },
+          "Recon LLM 验证完成"
+        );
+        return result;
+      } catch (error) {
+        const traceLen = (workerResult.compressed_history?.trim().length ?? 0);
+        const hasFindings = traceLen > 50;
+        logger.warn({ subgoalId, executionId: workerResult.execution_id, err: error, hasFindings, traceLen }, "Recon LLM 验证失败，降级判定");
+        return {
+          schema_version: "v1",
+          execution_id: workerResult.execution_id,
+          subgoal_id: subgoalId,
+          verified_status: hasFindings ? VerificationStatus.VERIFIED_DONE : VerificationStatus.UNVERIFIABLE,
+          accepted_artifacts: [],
+          gap: hasFindings ? [] : subgoal.success_criteria,
+          notes: hasFindings
+            ? `[LLM verifier unavailable] Worker reported DONE with non-empty findings (${traceLen} chars); accepted as recon VERIFIED_DONE`
+            : `[LLM verifier unavailable] Recon worker did not return enough findings to verify`,
+          verified_at: nowIso()
+        };
+      }
+    }
+
+    // DONE or PARTIAL: run LLM verification (build kind)
     logger.info({ subgoalId, executionId: workerResult.execution_id, criteriaCount: subgoal.success_criteria.length }, "调用 LLM 验证 success criteria 与 claimed outcome");
     try {
       const llmResult = await this.runLlmVerification(subgoal, workerResult, acceptedArtifacts, settings);
@@ -126,6 +156,110 @@ export class VerifierService {
       logger.info({ subgoalId, executionId: workerResult.execution_id, verifiedStatus: result.verified_status }, "降级验证完成");
       return result;
     }
+  }
+
+  /**
+   * 函数作用：对 recon 子目标做专用 LLM 验证。
+   * recon 没有文件 artifact，verifier 只看发现是不是回答了 success_criteria 里的问题。
+   */
+  private async runReconLlmVerification(
+    subgoal: SubgoalContract,
+    workerResult: WorkerResult,
+    settings: Settings
+  ): Promise<LlmVerificationOutput> {
+    const systemPrompt = [
+      "You are an independent verifier of RECONNAISSANCE (read-only investigation) subgoals.",
+      "A recon worker has no file artifacts to verify — its product is the FINDINGS reported in the execution trace and the claimed_outcome.",
+      "Your job: judge whether the worker's findings actually answered each success criterion.",
+      "Be lenient on form (free text / bullet list / inline data are all fine) but strict on substance — did the answer cover the question?",
+      "If the trace shows only attempted lookups but no concrete answer, mark unsatisfied (or unverifiable if you genuinely can't tell).",
+      "Output valid JSON only."
+    ].join("\n");
+
+    const userPrompt = [
+      "## Recon Success Criteria (questions the worker was asked to answer)",
+      subgoal.success_criteria.length > 0
+        ? subgoal.success_criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")
+        : "(no explicit criteria — judge whether the worker delivered useful findings for the subgoal objective)",
+      "",
+      "## Subgoal Objective (context)",
+      subgoal.objective,
+      "",
+      "## Worker Final Summary (claimed_outcome)",
+      workerResult.claimed_outcome ?? "(not provided)",
+      "",
+      "## Worker Execution Trace (tool calls + findings, structured)",
+      workerResult.compressed_history || "(not provided)",
+      "",
+      "For each success criterion output a verdict:",
+      '  "satisfied"    — the findings clearly answer this question',
+      '  "unsatisfied"  — the findings did not address this, or contradict reality',
+      '  "unverifiable" — cannot tell from the trace whether it was answered',
+      "",
+      "Also assess whether claimed_outcome is faithful to the execution trace (no fabricated facts).",
+      "",
+      "Output exactly this JSON shape:",
+      '{"criteria_verdicts":[{"criterion":"...","verdict":"satisfied|unsatisfied|unverifiable","evidence":"..."}],"outcome_consistent":true,"outcome_inconsistency_notes":"..."}'
+    ].join("\n");
+
+    logger.debug({ subgoalId: subgoal.subgoal_id, criteriaCount: subgoal.success_criteria.length }, "发送 Recon LLM 验证请求");
+    return this.llmClient.generateJson<LlmVerificationOutput>({
+      settings,
+      role: "verifier",
+      systemPrompt,
+      userPrompt,
+      temperature: 0.1,
+      maxTokens: 1500
+    });
+  }
+
+  /**
+   * 函数作用：把 recon LLM 判定结果组装成 VerificationResult。
+   * recon 不要求 acceptedArtifacts，只要 LLM 说 success_criteria 都满足就给 VERIFIED_DONE。
+   */
+  private buildReconResultFromLlm(
+    subgoalId: string,
+    workerResult: WorkerResult,
+    llmResult: LlmVerificationOutput
+  ): VerificationResult {
+    const verdicts = llmResult.criteria_verdicts ?? [];
+    const satisfied = verdicts.filter((v) => v.verdict === "satisfied");
+    const unsatisfied = verdicts.filter((v) => v.verdict === "unsatisfied");
+    const gap = unsatisfied.map((v) => v.criterion);
+
+    let verifiedStatus: VerificationStatus;
+    let notes: string;
+
+    if (verdicts.length === 0 || verdicts.every((v) => v.verdict === "unverifiable")) {
+      verifiedStatus = VerificationStatus.UNVERIFIABLE;
+      notes = "Recon: no criterion could be verified from the findings";
+    } else if (unsatisfied.length === 0) {
+      verifiedStatus = VerificationStatus.VERIFIED_DONE;
+      notes = `Recon: all ${satisfied.length} success criteria answered`;
+      if (!llmResult.outcome_consistent && llmResult.outcome_inconsistency_notes) {
+        notes += `. Note: claimed_outcome inconsistency — ${llmResult.outcome_inconsistency_notes}`;
+      }
+    } else if (satisfied.length > 0) {
+      verifiedStatus = VerificationStatus.PARTIAL;
+      notes = `Recon: ${satisfied.length}/${verdicts.length} criteria answered`;
+      if (!llmResult.outcome_consistent && llmResult.outcome_inconsistency_notes) {
+        notes += `. Inconsistency: ${llmResult.outcome_inconsistency_notes}`;
+      }
+    } else {
+      verifiedStatus = VerificationStatus.UNVERIFIABLE;
+      notes = "Recon: findings did not satisfy any criterion";
+    }
+
+    return {
+      schema_version: "v1",
+      execution_id: workerResult.execution_id,
+      subgoal_id: subgoalId,
+      verified_status: verifiedStatus,
+      accepted_artifacts: [],
+      gap,
+      notes,
+      verified_at: nowIso()
+    };
   }
 
   private async runLlmVerification(

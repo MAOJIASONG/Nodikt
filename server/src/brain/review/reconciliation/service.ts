@@ -61,8 +61,33 @@ export class ReconciliationService {
     const subgoal = { ...input.subgoal, updated_at: timestamp };
     const execution = { ...input.execution, updated_at: timestamp };
 
+    // recon 类子目标即便验证通过，也不算"任务完成" —— 由下一轮 planner / clarifier 接着推动
+    const isReconSubgoal = input.subgoal.kind === "recon";
+
     switch (input.verification.verified_status) {
       case VerificationStatus.VERIFIED_DONE:
+        if (isReconSubgoal) {
+          // recon 既可能服务于 plan 阶段（OO 已存在），也可能服务于 clarification 阶段（OO=null）。
+          // - OO 存在：把 demand 推到 ACTIVE/PLANNING，后续走 REPLAN_REQUESTED 让 planner 重新生成 build plan。
+          // - OO=null：clarification 阶段的 recon，状态机不允许 PENDING_ALIGNMENT → ACTIVE；
+          //            保持 demand 当前 state/phase，由 reviewHandlers 把发现回灌给 clarifier。
+          const reconForPlan = Boolean(input.demand.operational_objective);
+          if (reconForPlan) {
+            demand.state = DemandState.ACTIVE;
+            demand.current_phase = DemandPhase.PLANNING;
+          }
+          demand.progress_percent = Math.min(50, demand.progress_percent + 10);
+          subgoal.state = SubgoalState.DONE;
+          execution.state = ExecutionState.DONE;
+          execution.completed_at = timestamp;
+          return {
+            demand,
+            subgoal,
+            execution,
+            missionCompleted: false,
+            replanRequested: true
+          };
+        }
         demand.state = DemandState.COMPLETED;
         demand.current_phase = DemandPhase.COMPLETED;
         demand.progress_percent = 100;
