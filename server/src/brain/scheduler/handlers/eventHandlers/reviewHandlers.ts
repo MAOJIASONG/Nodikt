@@ -915,6 +915,162 @@ async function handlePlanReviewDecision(
   };
 }
 
+/**
+ * 函数作用：处理 PATH_GRANT_REQUIRED 决策的用户响应。
+ *
+ * 注意事项：
+ * - APPROVE：把 pending_workspace_grant_path 写入 demand.metadata.workspace_grants（去重）；
+ *   若 payload.remember 为 true，还把它追加到 settings.workspace_grants。
+ * - 然后从 demand.metadata.pending_clarification_payload 取回澄清结果，
+ *   发出 DEMAND_CLARIFICATION_COMPLETED 继续后续 planning 流程。
+ * - REJECT / CANCEL_DEMAND：取消 demand。
+ */
+async function handlePathGrantDecision(
+  event: SchedulerEvent,
+  ctx: HandlerContext,
+  decision: DecisionRequest,
+  demand: Demand,
+  payload: { decision_response: { action: DecisionAction; note?: string | null; payload?: Record<string, unknown> } }
+): Promise<HandlerResult> {
+  void event;
+  const action = payload.decision_response.action;
+  const note = (payload.decision_response.note ?? "").trim();
+  const remember = payload.decision_response.payload?.remember === true;
+  const timestamp = nowIso();
+
+  const pendingPath = (demand.metadata?.pending_workspace_grant_path as string | undefined) ?? null;
+  const pendingPayload = demand.metadata?.pending_clarification_payload as
+    | {
+        clarified_demand: string;
+        operational_objective: {
+          acceptance_criteria?: string[];
+          constraints?: string[];
+          [k: string]: unknown;
+        };
+        clarification_summary?: string;
+      }
+    | undefined;
+
+  if (action === DecisionAction.REJECT || action === DecisionAction.CANCEL_DEMAND) {
+    await ctx.repositories.decisions.upsert({
+      ...decision,
+      status: "RESOLVED" as any,
+      resolved_at: timestamp
+    });
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action }, "PATH_GRANT 被拒绝，取消 demand");
+    return {
+      events: [
+        createEvent(
+          EventType.DEMAND_CANCELLED,
+          { action: "cancel", note: note || `path_grant_${String(action).toLowerCase()}` },
+          { demand_id: demand.demand_id }
+        )
+      ]
+    };
+  }
+
+  if (action !== DecisionAction.APPROVE) {
+    logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, action }, "PATH_GRANT 收到非批准动作，保持决策打开");
+    return {};
+  }
+
+  if (!pendingPath || !pendingPayload) {
+    logger.warn({ demandId: demand.demand_id, decisionId: decision.decision_id }, "PATH_GRANT APPROVE 但缺少 pending 元数据，按取消处理");
+    await ctx.repositories.decisions.upsert({
+      ...decision,
+      status: "RESOLVED" as any,
+      resolved_at: timestamp
+    });
+    return {
+      events: [
+        createEvent(
+          EventType.DEMAND_CANCELLED,
+          { action: "cancel", note: "path_grant_missing_payload" },
+          { demand_id: demand.demand_id }
+        )
+      ]
+    };
+  }
+
+  // 1. 写入 demand 级授权
+  const existingDemandGrants: Array<{ path: string; granted_at: string; remember?: boolean }> =
+    Array.isArray(demand.metadata?.workspace_grants)
+      ? (demand.metadata?.workspace_grants as Array<{ path: string; granted_at: string; remember?: boolean }>)
+      : [];
+  const alreadyInDemand = existingDemandGrants.some((g) => g && g.path === pendingPath);
+  const nextDemandGrants = alreadyInDemand
+    ? existingDemandGrants
+    : [...existingDemandGrants, { path: pendingPath, granted_at: timestamp, remember }];
+
+  // 2. 永久授权：写入 settings.workspace_grants
+  if (remember) {
+    const settings = await ctx.repositories.loadSettings();
+    const existingSettingsGrants: Array<{ path: string; granted_at: string }> =
+      Array.isArray(settings.workspace_grants)
+        ? (settings.workspace_grants as Array<{ path: string; granted_at: string }>)
+        : [];
+    const alreadyInSettings = existingSettingsGrants.some((g) => g && g.path === pendingPath);
+    if (!alreadyInSettings) {
+      await ctx.repositories.settings.save({
+        ...settings,
+        workspace_grants: [...existingSettingsGrants, { path: pendingPath, granted_at: timestamp }],
+        updated_at: timestamp
+      } as any);
+      logger.info({ demandId: demand.demand_id, path: pendingPath }, "Path grant 永久写入 settings.workspace_grants");
+    }
+  }
+
+  // 3. 关闭决策，clear pending payload，进入 planning
+  await ctx.repositories.decisions.upsert({
+    ...decision,
+    status: "RESOLVED" as any,
+    resolved_at: timestamp
+  });
+
+  const restMeta = { ...(demand.metadata ?? {}) } as Record<string, unknown>;
+  delete restMeta.pending_clarification_payload;
+  delete restMeta.pending_workspace_grant_path;
+  restMeta.workspace_grants = nextDemandGrants;
+
+  await ctx.repositories.demands.upsert(transitionDemand(demand, {
+    state: DemandState.READY,
+    current_phase: DemandPhase.PLANNING,
+    active_decision_id: null,
+    metadata: restMeta
+  }, {
+    phase: DemandPhase.PLANNING,
+    waiting_on: null,
+    progress_note: `Path grant approved (${remember ? "remembered" : "once"})`
+  }));
+
+  logger.info({
+    demandId: demand.demand_id,
+    decisionId: decision.decision_id,
+    path: pendingPath,
+    remember
+  }, "PATH_GRANT 已批准，恢复 planning 流程");
+
+  return {
+    events: [
+      createEvent(
+        EventType.DEMAND_CLARIFICATION_COMPLETED,
+        {
+          clarified_demand: pendingPayload.clarified_demand,
+          operational_objective: pendingPayload.operational_objective as any,
+          acceptance_criteria: Array.isArray(pendingPayload.operational_objective?.acceptance_criteria)
+            ? pendingPayload.operational_objective.acceptance_criteria
+            : [],
+          constraints: Array.isArray(pendingPayload.operational_objective?.constraints)
+            ? pendingPayload.operational_objective.constraints
+            : [],
+          clarification_summary: pendingPayload.clarification_summary ?? ""
+        },
+        { demand_id: demand.demand_id }
+      )
+    ]
+  };
+}
+
 export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: HandlerContext): Promise<HandlerResult> {
   const payload = event.payload as { decision_response: { action: DecisionAction; note?: string; payload?: Record<string, unknown> } };
   const decision = await ctx.repositories.decisions.getById(event.decision_id ?? "");
@@ -929,6 +1085,10 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
 
   if (decision.reason_code === DecisionReasonCode.PLAN_REVIEW) {
     return handlePlanReviewDecision(event, ctx, decision, demand, payload);
+  }
+
+  if (decision.reason_code === DecisionReasonCode.PATH_GRANT_REQUIRED) {
+    return handlePathGrantDecision(event, ctx, decision, demand, payload);
   }
 
   if (payload.decision_response.action === DecisionAction.PROVIDE_INFO) {
