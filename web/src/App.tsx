@@ -93,6 +93,7 @@ export function App() {
   const [selectedSubgoalDialog, setSelectedSubgoalDialog] = useState<{ subgoalId: string; mode: "success" | "failed" | "issue" } | null>(null);
   const [subgoalDialogClosing, setSubgoalDialogClosing] = useState(false);
   const [planTransitionMode, setPlanTransitionMode] = useState<"idle" | "exiting" | "replanning">("idle");
+  const [replanSubmitting, setReplanSubmitting] = useState(false);
   const [decisionNotes, setDecisionNotes] = useState<Record<string, string>>({});
   const [decisionSubmitting, setDecisionSubmitting] = useState<string | null>(null);
   const [expandedPlanItemId, setExpandedPlanItemId] = useState<string | null>(null);
@@ -483,7 +484,20 @@ export function App() {
     }[stage];
   }
 
-  function decisionActionLabel(action: string): string {
+  function decisionActionLabel(action: string, reasonCode?: string | null): string {
+    if (reasonCode === "PLAN_REVIEW") {
+      const planReviewLabels: Record<string, string> = {
+        Approve: "Approve Plan",
+        ProvideInfo: "Send Feedback",
+        Reject: "Reject Plan",
+        CancelDemand: "Cancel Demand",
+        Pause: "Pause",
+        Stop: "Stop"
+      };
+      if (planReviewLabels[action]) {
+        return planReviewLabels[action];
+      }
+    }
     return {
       Approve: "Approve",
       Reject: "Reject",
@@ -492,6 +506,22 @@ export function App() {
       Stop: "Stop",
       CancelDemand: "Cancel Demand"
     }[action] ?? action;
+  }
+
+  function decisionReasonLabel(reasonCode?: string | null): string {
+    if (!reasonCode) return "DECISION";
+    const friendly: Record<string, string> = {
+      PLAN_REVIEW: "Plan Review",
+      MISSING_INFO: "Missing Info",
+      MISSING_PERMISSION: "Missing Permission",
+      INSTALL_REQUIRES_REVIEW: "Install Review",
+      PLAN_CONFLICT: "Plan Conflict",
+      UNVERIFIABLE_RESULT: "Unverifiable",
+      HIGH_RISK_ACTION: "High Risk",
+      BLOCKED: "Blocked",
+      OPS_ALERT: "Ops Alert"
+    };
+    return friendly[reasonCode] ?? reasonCode;
   }
 
   function decisionActionClass(action: string): string {
@@ -846,6 +876,46 @@ export function App() {
     }
   }
 
+  async function requestReplan() {
+    if (!detail) {
+      return;
+    }
+    const note = window.prompt(
+      "用一句话告诉 planner 为什么要重规划（可选，直接回车跳过）",
+      ""
+    );
+    if (note === null) {
+      return;
+    }
+
+    setExpandedPlanItemId(null);
+    setPlanTransitionMode("exiting");
+    if (planTransitionTimerRef.current) {
+      window.clearTimeout(planTransitionTimerRef.current);
+    }
+    planTransitionTimerRef.current = window.setTimeout(() => {
+      setPlanTransitionMode("replanning");
+      planTransitionTimerRef.current = null;
+    }, 220);
+
+    setReplanSubmitting(true);
+    try {
+      await apiRequest<{ ok: true }>(`/demands/${detail.demand.demand_id}/replan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: note.trim() || null })
+      });
+      await loadDashboard();
+      await loadDemandDetail(detail.demand.demand_id);
+      setPlanTransitionMode("idle");
+    } catch (error) {
+      setPlanTransitionMode("idle");
+      window.alert(error instanceof Error ? error.message : "Replan 失败");
+    } finally {
+      setReplanSubmitting(false);
+    }
+  }
+
   function renderDecisionActions(decision: Decision) {
     const actions = (decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[];
     return actions.map((action) => {
@@ -859,7 +929,7 @@ export function App() {
           disabled={disabled}
           onClick={() => void respondToDecision(decision.decision_id, action)}
         >
-          {decisionSubmitting === decision.decision_id ? "Sending..." : decisionActionLabel(action)}
+          {decisionSubmitting === decision.decision_id ? "Sending..." : decisionActionLabel(action, decision.reason_code)}
         </button>
       );
     });
@@ -1585,9 +1655,9 @@ export function App() {
 	                      </div>
 	                      <div className="list-stack">
 	                        {openDecisions.map((decision) => (
-	                          <article key={decision.decision_id} className="decision-card">
+	                          <article key={decision.decision_id} className={`decision-card${decision.reason_code === "PLAN_REVIEW" ? " decision-card-plan-review" : ""}`}>
 	                            <div className="decision-modal-head">
-	                              <small className="pill pill-warning">{decision.reason_code ?? "DECISION"}</small>
+	                              <small className={`pill ${decision.reason_code === "PLAN_REVIEW" ? "pill-info" : "pill-warning"}`}>{decisionReasonLabel(decision.reason_code)}</small>
 	                              <small>{decision.source ?? "scheduler"}</small>
 	                            </div>
 	                            <p className="bounded-copy decision-copy">{summarizeDecisionPrompt(decision.prompt)}</p>
@@ -1621,7 +1691,23 @@ export function App() {
                           </h2>
                           <small className="plan-subnote">Progressive: each subgoal is shaped by the previous worker feedback.</small>
                         </div>
-                        <span className="status-chip">{detail.subgoals.length} subgoals</span>
+                        <div className="plan-heading-actions">
+                          <button
+                            type="button"
+                            className="ghost plan-replan-button"
+                            onClick={() => void requestReplan()}
+                            disabled={
+                              replanSubmitting
+                              || planIsTransitioning
+                              || alignmentInProgress
+                              || ["COMPLETED", "FAILED", "CANCELLED", "PAUSED"].includes(detail.demand.state)
+                            }
+                            title="重新规划：发起一次新的 planner 调用，把当前 plan 替换为新的方案"
+                          >
+                            {replanSubmitting ? "Replanning..." : "Replan"}
+                          </button>
+                          <span className="status-chip">{detail.subgoals.length} subgoals</span>
+                        </div>
                       </div>
                       <div className={`plan-scroll${planIsExiting ? " is-replan-exiting" : ""}${planIsTransitioning ? " is-replanning" : ""}`}>
                         {alignmentInProgress ? (
@@ -1637,15 +1723,22 @@ export function App() {
                               Nodikt is still aligning the demand. Once the objective is clear enough, this panel will transition into the execution plan automatically.
                             </p>
                             <div className="conversation-scroll modal-conversation-scroll detail-conversation-scroll">
-                              {conversationHistory.map((message, index) => (
-                                <div
-                                  key={`${message.created_at}-${index}`}
-                                  className={message.role === "assistant" ? "conversation-turn assistant" : "conversation-turn user"}
-                                >
-                                  <small>{message.role === "assistant" ? "Assistant" : "You"}</small>
-                                  <p>{message.content}</p>
-                                </div>
-                              ))}
+                              {conversationHistory.map((message, index) => {
+                                const isReconFindings = message.role === "assistant" && message.content.startsWith("[Recon findings]");
+                                const displayContent = isReconFindings
+                                  ? message.content.replace(/^\[Recon findings\]\s*/, "")
+                                  : message.content;
+                                const label = isReconFindings
+                                  ? "Recon Findings"
+                                  : message.role === "assistant" ? "Assistant" : "You";
+                                const cls = `conversation-turn ${message.role === "assistant" ? "assistant" : "user"}${isReconFindings ? " conversation-turn-recon-findings" : ""}`;
+                                return (
+                                  <div key={`${message.created_at}-${index}`} className={cls}>
+                                    <small>{label}</small>
+                                    <p>{displayContent}</p>
+                                  </div>
+                                );
+                              })}
                               {assistantTyping ? (
                                 <div className="conversation-turn assistant conversation-turn-typing">
                                   <small>Assistant</small>
@@ -1764,9 +1857,14 @@ export function App() {
                                           const inspectable = hasInspectableIssue(stage, linkedDecision);
 
                                           return (
-                                            <div key={subgoal.subgoal_id} className="plan-subgoal-card plan-subgoal-grid">
+                                            <div key={subgoal.subgoal_id} className={`plan-subgoal-card plan-subgoal-grid${subgoal.kind === "recon" ? " plan-subgoal-card-recon" : ""}`}>
                                               <div className="subgoal-zone subgoal-zone-main">
-                                                <strong>{subgoal.title}</strong>
+                                                <strong>
+                                                  {subgoal.title}
+                                                  {subgoal.kind === "recon" ? (
+                                                    <span className="subgoal-kind-badge subgoal-kind-recon" title="Reconnaissance subgoal: read-only inspection to gather info for the next planning round">RECON</span>
+                                                  ) : null}
+                                                </strong>
                                                 <p>{subgoal.objective}</p>
                                                 {linkedDecision ? (
                                                   <small className="subgoal-inline-note">
@@ -1847,9 +1945,14 @@ export function App() {
                                     const inspectable = hasInspectableIssue(stage, linkedDecision);
 
                                     return (
-                                      <div key={subgoal.subgoal_id} className="plan-subgoal-card plan-subgoal-grid">
+                                      <div key={subgoal.subgoal_id} className={`plan-subgoal-card plan-subgoal-grid${subgoal.kind === "recon" ? " plan-subgoal-card-recon" : ""}`}>
                                         <div className="subgoal-zone subgoal-zone-main">
-                                          <strong>{subgoal.title}</strong>
+                                          <strong>
+                                            {subgoal.title}
+                                            {subgoal.kind === "recon" ? (
+                                              <span className="subgoal-kind-badge subgoal-kind-recon" title="Reconnaissance subgoal: read-only inspection to gather info for the next planning round">RECON</span>
+                                            ) : null}
+                                          </strong>
                                           <p>{subgoal.objective}</p>
                                           {linkedDecision ? (
                                             <small className="subgoal-inline-note">
@@ -1935,15 +2038,22 @@ export function App() {
                           Stay in alignment until the demand is clear. Once clarification is complete, Nodikt will enter the demand page and show the execution plan.
                         </p>
                         <div className="conversation-scroll modal-conversation-scroll">
-                          {conversationHistory.map((message, index) => (
-                            <div
-                              key={`${message.created_at}-${index}`}
-                              className={message.role === "assistant" ? "conversation-turn assistant" : "conversation-turn user"}
-                            >
-                              <small>{message.role === "assistant" ? "Assistant" : "You"}</small>
-                              <p>{message.content}</p>
-                            </div>
-                          ))}
+                          {conversationHistory.map((message, index) => {
+                            const isReconFindings = message.role === "assistant" && message.content.startsWith("[Recon findings]");
+                            const displayContent = isReconFindings
+                              ? message.content.replace(/^\[Recon findings\]\s*/, "")
+                              : message.content;
+                            const label = isReconFindings
+                              ? "Recon Findings"
+                              : message.role === "assistant" ? "Assistant" : "You";
+                            const cls = `conversation-turn ${message.role === "assistant" ? "assistant" : "user"}${isReconFindings ? " conversation-turn-recon-findings" : ""}`;
+                            return (
+                              <div key={`${message.created_at}-${index}`} className={cls}>
+                                <small>{label}</small>
+                                <p>{displayContent}</p>
+                              </div>
+                            );
+                          })}
                           {assistantTyping ? (
                             <div className="conversation-turn assistant conversation-turn-typing">
                               <small>Assistant</small>

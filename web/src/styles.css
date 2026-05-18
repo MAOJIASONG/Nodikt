@@ -797,6 +797,12 @@ small,
   gap: 12px;
 }
 
+.decision-card-plan-review {
+  border-left: 3px solid #4a90e2;
+  padding-left: 14px;
+  background: rgba(74, 144, 226, 0.04);
+}
+
 .decision-copy {
   white-space: pre-wrap;
 }
@@ -863,6 +869,25 @@ small,
 
 .worker-create-modal {
   width: min(560px, calc(100vw - 40px));
+}
+
+.plan-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-replan-button {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  letter-spacing: 0.04em;
+}
+
+.plan-replan-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .plan-panel {
@@ -1007,6 +1032,27 @@ small,
   border: 1px solid var(--line);
   border-radius: 16px;
   background: #060606;
+}
+
+.plan-subgoal-card-recon {
+  border-color: #6a5acd;
+  background: linear-gradient(180deg, rgba(106, 90, 205, 0.06) 0%, #060606 60%);
+}
+
+.subgoal-kind-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.subgoal-kind-recon {
+  background: #6a5acd;
+  color: #f0eeff;
 }
 
 .plan-subgoal-grid {
@@ -1299,6 +1345,25 @@ small,
 .conversation-turn.assistant {
   align-self: flex-start;
   background: #050505;
+}
+
+.conversation-turn-recon-findings {
+  border-left: 3px solid #6a5acd;
+  background: linear-gradient(180deg, rgba(106, 90, 205, 0.08) 0%, #060606 80%);
+}
+
+.conversation-turn-recon-findings small {
+  color: #b3a7ff;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.conversation-turn-recon-findings p {
+  white-space: pre-wrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 .conversation-turn small {

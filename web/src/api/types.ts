@@ -202,6 +202,7 @@ export type Subgoal = {
   dependencies?: string[];
   priority?: number;
   planning_round?: number;
+  kind?: "build" | "recon";
 };
 
 export type MemoryRecord = {

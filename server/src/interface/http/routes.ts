@@ -241,6 +241,36 @@ export function createApiRouter(
     }
   });
 
+  router.post("/demands/:id/replan", async (req, res, next) => {
+    try {
+      const demand = await repositories.demands.getById(req.params.id);
+      if (!demand) {
+        res.status(404).json({ error: "Demand not found" });
+        return;
+      }
+      const terminalStates = [DemandState.COMPLETED, DemandState.FAILED, DemandState.CANCELLED];
+      if (terminalStates.includes(demand.state) || demand.state === DemandState.PAUSED) {
+        res.status(409).json({ error: `Demand state ${demand.state} is not replannable` });
+        return;
+      }
+      const rawNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+      await eventBus.publish(
+        createEvent(
+          EventType.REPLAN_REQUESTED,
+          {
+            reason: "user_triggered",
+            note: rawNote.length > 0 ? rawNote : null,
+            source: "ui"
+          },
+          { demand_id: demand.demand_id }
+        )
+      );
+      res.status(202).json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/demands/:id/control", async (req, res, next) => {
     try {
       const action = String(req.body.action ?? "");

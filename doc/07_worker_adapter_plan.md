@@ -2,7 +2,7 @@
 
 ## Summary
 
-Nodikt v1 仅接入 `codex` 与 `opencode` 两类 worker，二者都必须通过统一 adapter contract 接入 Scheduler：
+Nodikt v1 接入 `codex`、`opencode`、`claude_code` 三类 worker，全部通过统一 adapter contract 接入 Scheduler：
 
 - `register(config)`
 - `startExecution(packet)`
