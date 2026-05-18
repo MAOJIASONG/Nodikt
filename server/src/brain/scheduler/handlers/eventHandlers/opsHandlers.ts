@@ -139,7 +139,10 @@ export async function onExecutionTimeoutDetected(event: SchedulerEvent, ctx: Han
   const execution = await ctx.repositories.executions.getById(event.execution_id ?? "");
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   const subgoal = await ctx.repositories.subgoals.getById(event.subgoal_id ?? "");
-  if (!execution || !demand || !subgoal || !demand.operational_objective) {
+  // 注意：不再要求 demand.operational_objective 存在 —— recon 子目标在 clarification 阶段
+  // 派出后 OO 仍为 null，此时若 ops 看到 OO=null 就直接 return，会让 stuck execution 永远清不掉，
+  // barrier 永远等不齐。这里只要必需的 records 在就继续处理 timeout。
+  if (!execution || !demand || !subgoal) {
     logger.warn({
       demandId: event.demand_id,
       subgoalId: event.subgoal_id,
