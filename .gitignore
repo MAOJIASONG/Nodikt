@@ -88,6 +88,11 @@ env/
 .cursorignore
 .cursorindexingignore
 .claude/
+CLAUDE.md
+
+# --- 项目内部文档（本地保留，不推到远端） -----------------------
+Nodikt_项目介绍.md
+Nodikt_项目定义文档_稳态推进版.mdv2.md
 
 # --- 杂项 ----------------------------------------------------
 .abstra/
