@@ -512,6 +512,7 @@ export function App() {
     if (!reasonCode) return "DECISION";
     const friendly: Record<string, string> = {
       PLAN_REVIEW: "Plan Review",
+      PATH_GRANT_REQUIRED: "Path Authorization",
       MISSING_INFO: "Missing Info",
       MISSING_PERMISSION: "Missing Permission",
       INSTALL_REQUIRES_REVIEW: "Install Review",
@@ -821,7 +822,11 @@ export function App() {
     }));
   }
 
-  async function respondToDecision(decisionId: string, action: DecisionAction) {
+  async function respondToDecision(
+    decisionId: string,
+    action: DecisionAction,
+    extraPayload?: Record<string, unknown>
+  ) {
     if (!detail) {
       return;
     }
@@ -849,7 +854,8 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action,
-          note: note || null
+          note: note || null,
+          payload: extraPayload ?? {}
         })
       });
 
@@ -917,6 +923,49 @@ export function App() {
   }
 
   function renderDecisionActions(decision: Decision) {
+    // PATH_GRANT_REQUIRED：Approve Once / Approve & Remember / Reject / Cancel —— 不依赖 options
+    if (decision.reason_code === "PATH_GRANT_REQUIRED") {
+      const submitting = decisionSubmitting === decision.decision_id;
+      return [
+        <button
+          key={`${decision.decision_id}-approve-once`}
+          type="button"
+          className="primary"
+          disabled={submitting}
+          onClick={() => void respondToDecision(decision.decision_id, "Approve" as DecisionAction, { remember: false })}
+        >
+          {submitting ? "Sending..." : "Approve Once"}
+        </button>,
+        <button
+          key={`${decision.decision_id}-approve-remember`}
+          type="button"
+          className="primary"
+          disabled={submitting}
+          onClick={() => void respondToDecision(decision.decision_id, "Approve" as DecisionAction, { remember: true })}
+        >
+          {submitting ? "Sending..." : "Approve & Remember"}
+        </button>,
+        <button
+          key={`${decision.decision_id}-reject`}
+          type="button"
+          className="ghost-button danger-button"
+          disabled={submitting}
+          onClick={() => void respondToDecision(decision.decision_id, "Reject" as DecisionAction)}
+        >
+          {submitting ? "Sending..." : "Reject"}
+        </button>,
+        <button
+          key={`${decision.decision_id}-cancel`}
+          type="button"
+          className="ghost-button danger-button"
+          disabled={submitting}
+          onClick={() => void respondToDecision(decision.decision_id, "CancelDemand" as DecisionAction)}
+        >
+          {submitting ? "Sending..." : "Cancel Demand"}
+        </button>
+      ];
+    }
+
     const actions = (decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[];
     return actions.map((action) => {
       const needsNote = decisionActionNeedsNote(action);
@@ -1655,9 +1704,24 @@ export function App() {
 	                      </div>
 	                      <div className="list-stack">
 	                        {openDecisions.map((decision) => (
-	                          <article key={decision.decision_id} className={`decision-card${decision.reason_code === "PLAN_REVIEW" ? " decision-card-plan-review" : ""}`}>
+	                          <article
+	                            key={decision.decision_id}
+	                            className={`decision-card${
+	                              decision.reason_code === "PLAN_REVIEW"
+	                                ? " decision-card-plan-review"
+	                                : decision.reason_code === "PATH_GRANT_REQUIRED"
+	                                  ? " decision-card-path-grant"
+	                                  : ""
+	                            }`}
+	                          >
 	                            <div className="decision-modal-head">
-	                              <small className={`pill ${decision.reason_code === "PLAN_REVIEW" ? "pill-info" : "pill-warning"}`}>{decisionReasonLabel(decision.reason_code)}</small>
+	                              <small className={`pill ${
+	                                decision.reason_code === "PLAN_REVIEW"
+	                                  ? "pill-info"
+	                                  : decision.reason_code === "PATH_GRANT_REQUIRED"
+	                                    ? "pill-accent"
+	                                    : "pill-warning"
+	                              }`}>{decisionReasonLabel(decision.reason_code)}</small>
 	                              <small>{decision.source ?? "scheduler"}</small>
 	                            </div>
 	                            <p className="bounded-copy decision-copy">{summarizeDecisionPrompt(decision.prompt)}</p>
