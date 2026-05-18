@@ -501,22 +501,35 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     //   (b) demand 尚未 clarified → publish USER_INPUT_RECEIVED(input_kind="recon_findings") 回灌给 clarifier
     // 并行 recon barrier：还有别的 recon 在跑就把发现暂存到 buffer 不发后续事件，
     // 等最后一个 recon 完成才一次性回灌
+    // recon 失败（FAILED / UNVERIFIABLE）的 subgoal 也参与 barrier：把它当成一条"没结果"的 finding
+    // 计数进 barrier，让其他完成的 recon 能正常汇总；只有这样 clarifier 才能拿到 1/2 有效发现继续推进。
     const isReconReplan = subgoal.kind === "recon"
-      && verification.verified_status === "VERIFIED_DONE";
+      && (verification.verified_status === "VERIFIED_DONE"
+          || verification.verified_status === "FAILED"
+          || verification.verified_status === "UNVERIFIABLE");
 
     if (isReconReplan) {
+      const reconFailed = verification.verified_status !== "VERIFIED_DONE";
       const activeReconExecutions = await listActiveOtherReconExecutions(
         ctx,
         demand.demand_id,
         execution.execution_id
       );
-      const currentFinding = {
-        subgoal_id: subgoal.subgoal_id,
-        subgoal_title: subgoal.title,
-        claimed_outcome: workerResult.claimed_outcome ?? "",
-        compressed_history: workerResult.compressed_history ?? "",
-        captured_at: nowIso()
-      };
+      const currentFinding = reconFailed
+        ? {
+            subgoal_id: subgoal.subgoal_id,
+            subgoal_title: subgoal.title,
+            claimed_outcome: `[recon FAILED: ${verification.verified_status}] ${verification.notes ?? workerResult.blocker_reason?.message ?? "no result"}`,
+            compressed_history: workerResult.compressed_history ?? "",
+            captured_at: nowIso()
+          }
+        : {
+            subgoal_id: subgoal.subgoal_id,
+            subgoal_title: subgoal.title,
+            claimed_outcome: workerResult.claimed_outcome ?? "",
+            compressed_history: workerResult.compressed_history ?? "",
+            captured_at: nowIso()
+          };
       const freshDemand = await ctx.repositories.demands.getById(demand.demand_id);
       const existingBuffer = Array.isArray(freshDemand?.metadata?.recon_findings_buffer)
         ? (freshDemand!.metadata!.recon_findings_buffer as Array<Record<string, unknown>>)

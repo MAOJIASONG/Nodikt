@@ -116,6 +116,20 @@ export class ReconciliationService {
           replanRequested: true
         };
       case VerificationStatus.UNVERIFIABLE:
+        // recon-in-clarification 验证不过：不能动 demand state（PENDING_ALIGNMENT→PENDING_DECISION 非法），
+        // 也不要弹用户决策卡——本来 recon 失败就该静默退化，由 barrier + clarifier 继续推进。
+        if (isReconSubgoal && !input.demand.operational_objective) {
+          subgoal.state = SubgoalState.FAILED;
+          execution.state = ExecutionState.FAILED;
+          execution.completed_at = timestamp;
+          return {
+            demand,
+            subgoal,
+            execution,
+            missionCompleted: false,
+            replanRequested: true
+          };
+        }
         demand.state = DemandState.PENDING_DECISION;
         demand.current_phase = DemandPhase.REVIEW;
         subgoal.state = SubgoalState.BLOCKED;
@@ -132,6 +146,18 @@ export class ReconciliationService {
         };
       case VerificationStatus.FAILED:
       default:
+        if (isReconSubgoal && !input.demand.operational_objective) {
+          subgoal.state = SubgoalState.FAILED;
+          execution.state = ExecutionState.FAILED;
+          execution.completed_at = timestamp;
+          return {
+            demand,
+            subgoal,
+            execution,
+            missionCompleted: false,
+            replanRequested: true
+          };
+        }
         demand.state = DemandState.FAILED;
         demand.current_phase = DemandPhase.FAILED;
         subgoal.state = SubgoalState.FAILED;
