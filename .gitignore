@@ -99,3 +99,6 @@ Nodikt_项目定义文档_稳态推进版.mdv2.md
 .pyre/
 .pytype/
 cython_debug/
+
+# --- 启动脚本运行时数据 ---
+.run/
