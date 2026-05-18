@@ -55,6 +55,11 @@ type ClarifiedDemandResult = {
   clarified_demand?: string;
   operational_objective?: OperationalObjective;
   clarification_summary?: string;
+  /**
+   * 用户在 demand 文本里明确指定的输出目录（绝对路径）。如果用户没指定就是 undefined。
+   * demandHandlers 在 READY 分支据此判断是否需要 PATH_GRANT_REQUIRED 决策。
+   */
+  workspace_override?: string | null;
 };
 
 type FrontierPlanResult = {
@@ -236,6 +241,17 @@ export class PlannerService {
           "- Only fall back to NEEDS_CLARIFICATION when the user has not specified a path/target at all, or when the question is genuinely a preference.",
           "- Never combine NEEDS_CLARIFICATION and NEEDS_RECON in the same response — choose the most informative single next step.",
           "",
+          "## Workspace override — IMPORTANT",
+          "If the user explicitly tells you WHERE to put the output (an absolute filesystem path like",
+          "`/home/user/projects/myapp` or `/volume/.../some-dir`), extract that path into the",
+          "`workspace_override` field — verbatim, just the directory path, no quotes, no surrounding text.",
+          "Rules:",
+          "- Only set this when the user names a directory (absolute path) as the destination. Don't guess.",
+          "- Trim trailing slashes.",
+          "- Leave it null/omit when the user did not specify an output location — the system has a default workspace.",
+          "- It's perfectly valid for a READY response to omit workspace_override.",
+          "- If the user says 'in my project folder' without giving the actual path, that's NEEDS_CLARIFICATION (ask for the path) — not workspace_override.",
+          "",
           "## Schema",
           JSON.stringify({
             status: "NEEDS_CLARIFICATION | NEEDS_RECON | READY",
@@ -259,7 +275,8 @@ export class PlannerService {
               non_goals: ["string"],
               termination_conditions: ["string"]
             },
-            clarification_summary: "string — set when status is READY"
+            clarification_summary: "string — set when status is READY",
+            workspace_override: "absolute path string — set when the user named a specific output directory; otherwise omit / null"
           })
         ].join("\n"),
         userPrompt: `User demand:\n${input.rawInput}`
@@ -330,6 +347,14 @@ export class PlannerService {
       throw new Error("LLM clarification returned READY without complete objective payload");
     }
 
+    // 提取并清洗 workspace_override：只接受绝对路径（POSIX 风格 /xxx）
+    const rawOverride = typeof result.workspace_override === "string"
+      ? result.workspace_override.trim().replace(/\/+$/, "")
+      : "";
+    const workspaceOverride = rawOverride.length > 0 && rawOverride.startsWith("/")
+      ? rawOverride
+      : null;
+
     return {
       status: "READY",
       display_title: result.display_title?.trim(),
@@ -341,7 +366,8 @@ export class PlannerService {
         non_goals: normalizeStringArray(result.operational_objective.non_goals),
         termination_conditions: normalizeStringArray(result.operational_objective.termination_conditions)
       },
-      clarification_summary: result.clarification_summary.trim()
+      clarification_summary: result.clarification_summary.trim(),
+      workspace_override: workspaceOverride
     };
   }
 
