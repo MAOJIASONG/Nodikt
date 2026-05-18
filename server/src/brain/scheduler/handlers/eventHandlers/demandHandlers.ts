@@ -21,6 +21,8 @@
 import {
   createEvent,
   createId,
+  DecisionAction,
+  DecisionReasonCode,
   DemandPhase,
   DemandState,
   EventType,
@@ -84,6 +86,46 @@ function materializeReconSubgoals(
     created_at: timestamp,
     updated_at: timestamp
   }));
+}
+
+/**
+ * 函数作用：判断 child 路径是不是位于 parent 之内（或就是 parent 本身）。
+ *
+ * 注意事项：
+ * - 仅做字符串前缀匹配，不解析符号链接。
+ * - parent 必须传绝对路径，否则结果不可靠。
+ */
+function pathIsWithin(child: string, parent: string): boolean {
+  if (!child || !parent) return false;
+  const c = child.replace(/\/+$/, "");
+  const p = parent.replace(/\/+$/, "");
+  if (c === p) return true;
+  return c.startsWith(p + "/");
+}
+
+/**
+ * 函数作用：判断给定的输出路径是否已被授权（在 settings.workspace_root / settings.workspace_grants /
+ * demand.metadata.workspace_grants 任一覆盖范围内）。
+ */
+function isPathAuthorized(
+  path: string,
+  settings: { workspace_root: string; workspace_grants?: Array<{ path: string }> },
+  demand: { metadata?: Record<string, unknown> }
+): boolean {
+  if (pathIsWithin(path, settings.workspace_root)) return true;
+  for (const grant of settings.workspace_grants ?? []) {
+    if (grant && typeof grant.path === "string" && pathIsWithin(path, grant.path)) return true;
+  }
+  const demandGrants = demand.metadata?.workspace_grants;
+  if (Array.isArray(demandGrants)) {
+    for (const grant of demandGrants) {
+      if (grant && typeof (grant as { path?: unknown }).path === "string"
+          && pathIsWithin(path, (grant as { path: string }).path)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function describeReconForUser(drafts: ReconSubgoalDraft[], rationale?: string): string {
@@ -202,7 +244,85 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
       return {};
     }
 
-    // READY
+    // READY —— 若 clarifier 提取到 workspace_override 且该路径未授权，先弹 PATH_GRANT_REQUIRED 决策
+    const override = clarification.workspace_override ?? null;
+    const baseConversation = [
+      { role: "user" as const, content: payload.input_text, created_at: timestamp },
+      {
+        role: "assistant" as const,
+        content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
+        created_at: timestamp
+      }
+    ];
+
+    // baseDemand 上没有 metadata 字段（initial_demand 阶段从 0 开始），所以传 undefined。
+    // demand-level grants 此时必然为空，授权判定只看 settings.workspace_root 与 settings.workspace_grants。
+    const needsPathGrant = override
+      && !isPathAuthorized(override, settings, { metadata: undefined });
+
+    if (needsPathGrant) {
+      // 暂存 clarification 完整 payload，等用户授权后再 publish DEMAND_CLARIFICATION_COMPLETED
+      const pendingPayload = {
+        clarified_demand: clarification.clarified_demand!,
+        operational_objective: clarification.operational_objective!,
+        clarification_summary: clarification.clarification_summary!
+      };
+      const prompt = [
+        `Nodikt 想要把产物写到这个目录：`,
+        ``,
+        `    ${override}`,
+        ``,
+        `这个路径不在当前已授权的工作目录内（系统默认目录是 ${settings.workspace_root}）。`,
+        `请选择：`,
+        `  • Approve Once：仅在本 demand 内授权这个目录`,
+        `  • Approve & Remember：永久授权（写入 Settings.workspace_grants，所有 demand 都能用）`,
+        `  • Reject / Cancel Demand：拒绝授权（你可以在对话里换个目录或重新提需求）`
+      ].join("\n");
+      const decision = ctx.decisionService.createRequest({
+        demandId,
+        source: "scheduler" as any,
+        reasonCode: DecisionReasonCode.PATH_GRANT_REQUIRED,
+        prompt,
+        options: [
+          DecisionAction.APPROVE,
+          DecisionAction.REJECT,
+          DecisionAction.CANCEL_DEMAND
+        ],
+        metadata: {
+          path_grant: {
+            requested_path: override,
+            current_workspace_root: settings.workspace_root
+          }
+        }
+      });
+      await ctx.repositories.demands.upsert({
+        ...baseDemand,
+        metadata: {
+          runtime_session: {
+            phase: DemandPhase.ALIGNMENT,
+            waiting_on: "user_decision",
+            frontier_subgoal_ids: [],
+            latest_checkpoint: event.event_id,
+            progress_note: `Path grant required for ${override}`,
+            last_progress_at: timestamp
+          },
+          conversation_history: baseConversation,
+          pending_clarification_payload: pendingPayload,
+          pending_workspace_grant_path: override
+        }
+      });
+      logger.info({ demandId, override, decisionId: decision.decision_id }, "初始需求 READY 但目标路径未授权，已弹 PATH_GRANT_REQUIRED 决策");
+      return {
+        events: [
+          createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
+            demand_id: demandId,
+            decision_id: decision.decision_id
+          })
+        ]
+      };
+    }
+
+    // 路径已授权（或没指定路径）—— 直接落 DEMAND_CLARIFICATION_COMPLETED
     await ctx.repositories.demands.upsert({
       ...baseDemand,
       metadata: {
@@ -214,14 +334,7 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
           progress_note: "Initial demand clarified",
           last_progress_at: timestamp
         },
-        conversation_history: [
-          { role: "user", content: payload.input_text, created_at: timestamp },
-          {
-            role: "assistant",
-            content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
-            created_at: timestamp
-          }
-        ]
+        conversation_history: baseConversation
       }
     });
 
@@ -368,6 +481,73 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         progress_note: "Clarification still needed"
       }));
       return {};
+    }
+
+    // READY —— 若 workspace_override 未授权，弹 PATH_GRANT_REQUIRED 决策
+    const overrideReply = clarification.workspace_override ?? null;
+    const needsPathGrantReply = overrideReply
+      && !isPathAuthorized(overrideReply, settings, demand);
+
+    if (needsPathGrantReply) {
+      const pendingPayload = {
+        clarified_demand: clarification.clarified_demand!,
+        operational_objective: clarification.operational_objective!,
+        clarification_summary: clarification.clarification_summary!
+      };
+      const grantPrompt = [
+        `Nodikt 想要把产物写到这个目录：`,
+        ``,
+        `    ${overrideReply}`,
+        ``,
+        `这个路径不在当前已授权的工作目录内（系统默认目录是 ${settings.workspace_root}）。`,
+        `请选择：`,
+        `  • Approve Once：仅在本 demand 内授权这个目录`,
+        `  • Approve & Remember：永久授权（写入 Settings.workspace_grants）`,
+        `  • Reject / Cancel Demand：拒绝授权`
+      ].join("\n");
+      const decision = ctx.decisionService.createRequest({
+        demandId: demand.demand_id,
+        source: "scheduler" as any,
+        reasonCode: DecisionReasonCode.PATH_GRANT_REQUIRED,
+        prompt: grantPrompt,
+        options: [DecisionAction.APPROVE, DecisionAction.REJECT, DecisionAction.CANCEL_DEMAND],
+        metadata: {
+          path_grant: {
+            requested_path: overrideReply,
+            current_workspace_root: settings.workspace_root
+          }
+        }
+      });
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        title: clarification.display_title?.slice(0, 60) || demand.title,
+        metadata: {
+          ...appendConversationTurns(demand.metadata, [
+            incomingTurn,
+            {
+              role: "assistant",
+              content: clarification.clarification_summary ?? "Clarification is complete. Moving to planning.",
+              created_at: timestamp
+            }
+          ]),
+          clarification_question: null,
+          recon_in_progress: false,
+          pending_clarification_payload: pendingPayload,
+          pending_workspace_grant_path: overrideReply
+        }
+      }, {
+        phase: DemandPhase.ALIGNMENT,
+        waiting_on: "user_decision",
+        progress_note: `Path grant required for ${overrideReply}`
+      }));
+      logger.info({ demandId: demand.demand_id, override: overrideReply, decisionId: decision.decision_id }, "澄清完成但路径未授权，已弹 PATH_GRANT_REQUIRED 决策");
+      return {
+        events: [
+          createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
+            demand_id: demand.demand_id,
+            decision_id: decision.decision_id
+          })
+        ]
+      };
     }
 
     logger.info({ demandId: demand.demand_id }, "澄清回复已接受");
