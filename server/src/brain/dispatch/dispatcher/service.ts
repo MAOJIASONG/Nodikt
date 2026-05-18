@@ -192,8 +192,25 @@ export class DispatcherService {
       }
     }
 
-    const environmentNotes: string[] = [`workspace_root=${input.workspaceRoot}`];
+    // 如果 demand 级 workspace_grants 非空（用户在 PATH_GRANT_REQUIRED 决策中显式批准了一个目录），
+    // 用它当 effective workspace root（adapter 真正的 cwd），让 worker 直接在用户期望的目录里干活。
+    // settings.workspace_root + 其他 grants 仍会进 workspace_allowed_paths，作为"附加可写区"提示。
+    const demandGrantsRaw = input.demand.metadata?.workspace_grants;
+    const demandGrantPaths: string[] = Array.isArray(demandGrantsRaw)
+      ? demandGrantsRaw
+          .filter((g: unknown): g is { path: string } =>
+            Boolean(g)
+            && typeof g === "object"
+            && typeof (g as Record<string, unknown>).path === "string"
+            && ((g as Record<string, unknown>).path as string).trim().length > 0
+          )
+          .map((g) => g.path)
+      : [];
+    const effectiveWorkspaceRoot = demandGrantPaths[0] ?? input.workspaceRoot;
+
+    const environmentNotes: string[] = [`workspace_root=${effectiveWorkspaceRoot}`];
     const allowedPaths = Array.from(new Set([
+      effectiveWorkspaceRoot,
       input.workspaceRoot,
       ...((input.workspaceGrants ?? []).filter((p) => typeof p === "string" && p.trim().length > 0))
     ]));
