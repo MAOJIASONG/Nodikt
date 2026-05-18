@@ -60,6 +60,33 @@ function readReconRoundsUsed(metadata: Record<string, unknown> | undefined): num
 }
 
 /**
+ * 判断回灌的 recon findings 文本是否表明所有 recon 都失败了。
+ * Recon barrier 在每条 finding 的 worker summary 行前缀写 "[recon FAILED: <status>]"。
+ * 如果所有 finding 都以这个前缀开头，说明本轮 recon 实际没拿到任何有效信息 ——
+ * 通常是 LLM gateway 503 / claude code 沙箱拦截 / spawn ENOENT 这类工具级故障，
+ * 跟用户的需求描述没关系。
+ */
+function isAllReconFailed(reconFindingsText: string): boolean {
+  if (!reconFindingsText) return false;
+  const blocks = reconFindingsText.split(/\n---\n/);
+  if (blocks.length === 0) return false;
+  return blocks.every((block) => /Worker summary:\s*\[recon FAILED:/.test(block));
+}
+
+/**
+ * 从全部失败的 recon findings 里抽取 3 条以内的失败原因摘要，附在 fallback question 里
+ * 让用户知道这不是她说不清，是工具挂了。
+ */
+function summarizeReconFailures(reconFindingsText: string): string {
+  if (!reconFindingsText) return "";
+  const reasons = [...reconFindingsText.matchAll(/Worker summary:\s*\[recon FAILED:[^\]]+\]\s*([^\n]+)/g)]
+    .map((m) => (m[1] ?? "").trim())
+    .filter((reason) => reason.length > 0)
+    .slice(0, 3);
+  return reasons.length > 0 ? reasons.join("\n  • ") : "";
+}
+
+/**
  * 函数作用：把 clarifier 给出的 recon_subgoals 草稿物化为可调度的 SubgoalContract 列表。
  * clarification 阶段还没有正式 planning_round，临时给 1。
  */
@@ -370,7 +397,10 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     const isReconFindings = payload.input_kind === "recon_findings";
     const settings = await ctx.repositories.loadSettings();
     const timestamp = nowIso();
-    logger.info({ demandId: demand.demand_id, inputKind: payload.input_kind }, "正在使用回复内容继续澄清需求");
+    // 检测 recon findings 是否全部失败 —— 后面的 round 计数和 fallback 模板都要参考。
+    const reconAllFailed = isReconFindings && isAllReconFailed(payload.input_text);
+    const reconFailureSummary = reconAllFailed ? summarizeReconFailures(payload.input_text) : "";
+    logger.info({ demandId: demand.demand_id, inputKind: payload.input_kind, reconAllFailed }, "正在使用回复内容继续澄清需求");
     let clarification: Awaited<ReturnType<typeof ctx.planner.clarifyDemand>>;
     try {
       clarification = await ctx.planner.clarifyDemand({
@@ -382,7 +412,10 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
             : "",
           isReconFindings
             ? `Recon findings from worker (system-generated, NOT a user message):\n${payload.input_text}`
-            : `User clarification reply: ${payload.input_text}`
+            : `User clarification reply: ${payload.input_text}`,
+          reconAllFailed
+            ? "IMPORTANT: ALL recon subgoals above failed at the WORKER LEVEL (gateway 503, sandbox blocked, spawn error, etc) — there is NO real recon data this round. The user's request was fine; the inspection tool itself broke. Prefer NEEDS_CLARIFICATION (ask the user 1 short concrete question) over NEEDS_RECON (which would just try the broken tool again). Only choose NEEDS_RECON if you can describe a meaningfully different inspection that might succeed."
+            : ""
         ].filter(Boolean).join("\n"),
         settings
       });
@@ -433,14 +466,20 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         };
 
     if (clarification.status === "NEEDS_RECON") {
-      // Safety net：到达 recon 轮数上限就强制降级问用户
+      // Safety net：到达 recon 轮数上限就强制降级问用户。
+      // 但失败的 recon round（全部 [recon FAILED]）不消耗预算 —— 工具挂了不算用户的锅，
+      // 让 clarifier 还能选 NEEDS_RECON 再试一次，或者改主意问用户。
       const usedRounds = readReconRoundsUsed(demand.metadata);
-      if (usedRounds >= MAX_CLARIFY_RECON_ROUNDS) {
-        const fallbackQuestion = `I've already dispatched ${usedRounds} round${usedRounds > 1 ? "s" : ""} of read-only investigation and still need more clarity. Could you tell me directly:\n\n- ${clarification.recon_rationale ?? "What I still need to know"}\n\n(${clarification.recon_subgoals?.slice(0, 2).map((sg) => sg.title).join(" / ") ?? "the remaining gap"})`;
+      if (usedRounds >= MAX_CLARIFY_RECON_ROUNDS && !reconAllFailed) {
+        const failureNote = reconFailureSummary
+          ? `\n\n上一轮 recon 全部失败（不是你说不清，是探查工具本身出错）：\n  • ${reconFailureSummary}\n`
+          : "";
+        const fallbackQuestion = `I've already dispatched ${usedRounds} round${usedRounds > 1 ? "s" : ""} of read-only investigation and still need more clarity. Could you tell me directly:\n\n- ${clarification.recon_rationale ?? "What I still need to know"}\n\n(${clarification.recon_subgoals?.slice(0, 2).map((sg) => sg.title).join(" / ") ?? "the remaining gap"})${failureNote}`;
         logger.warn({
           demandId: demand.demand_id,
           usedRounds,
-          maxRounds: MAX_CLARIFY_RECON_ROUNDS
+          maxRounds: MAX_CLARIFY_RECON_ROUNDS,
+          reconAllFailed
         }, "Recon 轮数达上限，强制降级为问用户");
         await ctx.repositories.demands.upsert(transitionDemand(demand, {
           title: clarification.display_title?.slice(0, 60) || demand.title,
@@ -460,6 +499,8 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         return {};
       }
 
+      // 失败的 recon round 不消耗预算 —— 503 / sandbox 拦截这种工具级故障重试不算"用户没说清"。
+      const nextRoundCount = reconAllFailed ? usedRounds : usedRounds + 1;
       const reconDescription = describeReconForUser(clarification.recon_subgoals!, clarification.recon_rationale);
       await ctx.repositories.demands.upsert(transitionDemand(demand, {
         title: clarification.display_title?.slice(0, 60) || demand.title,
@@ -470,12 +511,14 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
           ]),
           clarification_question: null,
           recon_in_progress: true,
-          recon_rounds_used: usedRounds + 1
+          recon_rounds_used: nextRoundCount
         }
       }, {
         phase: DemandPhase.ALIGNMENT,
         waiting_on: "recon_worker",
-        progress_note: `Recon dispatched to inform clarification (round ${usedRounds + 1}/${MAX_CLARIFY_RECON_ROUNDS})`
+        progress_note: reconAllFailed
+          ? `Recon retry (round ${nextRoundCount}/${MAX_CLARIFY_RECON_ROUNDS} — prior round failed at worker level, not counted)`
+          : `Recon dispatched to inform clarification (round ${nextRoundCount}/${MAX_CLARIFY_RECON_ROUNDS})`
       }));
       const reconSubgoals = materializeReconSubgoals(demand.demand_id, clarification.recon_subgoals!, timestamp);
       logger.info({
