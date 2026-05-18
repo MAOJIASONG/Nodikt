@@ -171,11 +171,21 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
     });
   }
 
-  // Legacy cleanup: remove deprecated worker_codex_local row before reconciling.
+  // Legacy cleanup: remove deprecated worker rows before reconciling.
+  // - worker_codex_local: codex adapter retired
+  // - worker_opencode_local: opencode CLI not installed in this environment; keep claude_code only.
+  //   Re-enable by restoring the default registration below + ensuring OPENCODE_INSTALL_ROOT points
+  //   to a real install.
   await repositories.workers.delete("worker_codex_local");
+  await repositories.workers.delete("worker_opencode_local");
+
+  const RETIRED_WORKER_IDS = new Set(["worker_codex_local", "worker_opencode_local"]);
+  const RETIRED_ADAPTER_TYPES = new Set(["codex", "opencode"]);
 
   const executions = await repositories.executions.list();
-  const existing = (await repositories.workers.list()).filter((worker) => worker.worker_id !== "worker_codex_local");
+  const existing = (await repositories.workers.list()).filter(
+    (worker) => !RETIRED_WORKER_IDS.has(worker.worker_id) && !RETIRED_ADAPTER_TYPES.has(worker.adapter_type)
+  );
 
   const seenAdapterTypes = new Set<string>();
   for (const worker of existing) {
@@ -201,9 +211,6 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
   }
 
   const timestamp = nowIso();
-  if (!seenAdapterTypes.has("opencode")) {
-    await registerWorker(appContext, buildDefaultOpencodeWorker(timestamp), adapters.opencodeAdapter);
-  }
   if (!seenAdapterTypes.has("claude_code")) {
     await registerWorker(appContext, buildDefaultClaudeCodeWorker(timestamp), adapters.claudeCodeAdapter);
   }

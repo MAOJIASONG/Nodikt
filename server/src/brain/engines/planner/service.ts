@@ -195,92 +195,121 @@ export class PlannerService {
     rawInput: string;
     settings: Settings;
   }): Promise<ClarifiedDemandResult> {
-    let result: ClarifiedDemandResult;
-    try {
-      result = await this.llmClient.generateJson<ClarifiedDemandResult>({
+    const systemPrompt = [
+      "You are the clarification assistant for Nodikt v1.",
+      "Return valid JSON only.",
+      "Treat clarification as a short conversation inside a demand, not as one-shot form filling.",
+      "Do not change the user's goal semantics.",
+      "",
+      "## You have THREE possible decisions",
+      "",
+      '1. "NEEDS_CLARIFICATION" — Ask the user. Use this ONLY when the gap is something only the user knows:',
+      "   their goals, preferences, business choices, brand-new artifacts they want, decisions you cannot make for them.",
+      "",
+      '2. "NEEDS_RECON" — Dispatch a read-only worker to investigate. Use this when the gap is',
+      "   FACTUAL information that a worker can observe directly without bothering the user.",
+      "   The recon worker has access to ANY read-only / observational tool: local file inspection",
+      "   (Read / Glob / Grep / ls / cat / git status), Web lookup (WebFetch / WebSearch),",
+      "   read-only HTTP / API queries, and even delegated sub-investigations (Task).",
+      "   It cannot write or mutate anything — locally or remotely.",
+      "",
+      "   DO NOT ask the user for facts that a worker can simply look up. Asking the user for things",
+      "   the system can observe itself is the wrong choice.",
+      "",
+      "   Examples that should be NEEDS_RECON:",
+      "     * \"Refactor this repo\" without specifying which files — recon the repo structure.",
+      "     * \"The tank game in server/workspace\" — recon the directory to see what's there.",
+      "     * \"Add a test for the auth module\" — recon to find where the auth module lives.",
+      "     * \"Migrate to React 19\" — recon official React 19 migration docs (WebFetch / WebSearch).",
+      "     * \"Use the latest OpenAI API\" — recon the current API spec online.",
+      "     * Anything that asks for behavior consistent with an EXTERNAL reference whose current state we should check.",
+      "",
+      "   When choosing NEEDS_RECON, output 1-3 `recon_subgoals`. For each, write a concrete read-only objective",
+      "   that hints at what kind of inspection is needed.",
+      "",
+      '3. "READY" — Information is sufficient. Compile an operational_objective and move to planning.',
+      "    When you choose READY, ALL of these fields MUST be non-empty strings (and operational_objective",
+      "    a complete object). Leaving any of them blank is a contract violation — re-emit the whole payload:",
+      "      - clarified_demand",
+      "      - clarification_summary",
+      "      - operational_objective.objective",
+      "      - operational_objective.{acceptance_criteria, constraints, non_goals, termination_conditions}",
+      "        (arrays — may be empty `[]` but must be present)",
+      "",
+      "## Rules of thumb",
+      "- If a fact COULD be inspected (path exists, file content readable, online doc) but the user has not been asked yet, prefer NEEDS_RECON over NEEDS_CLARIFICATION.",
+      "- Only fall back to NEEDS_CLARIFICATION when the user has not specified a path/target at all, or when the question is genuinely a preference.",
+      "- Never combine NEEDS_CLARIFICATION and NEEDS_RECON in the same response — choose the most informative single next step.",
+      "",
+      "## Workspace override — IMPORTANT",
+      "If the user explicitly tells you WHERE to put the output (an absolute filesystem path like",
+      "`/home/user/projects/myapp` or `/volume/.../some-dir`), extract that path into the",
+      "`workspace_override` field — verbatim, just the directory path, no quotes, no surrounding text.",
+      "Rules:",
+      "- Only set this when the user names a directory (absolute path) as the destination. Don't guess.",
+      "- Trim trailing slashes.",
+      "- Leave it null/omit when the user did not specify an output location — the system has a default workspace.",
+      "- It's perfectly valid for a READY response to omit workspace_override.",
+      "- If the user says 'in my project folder' without giving the actual path, that's NEEDS_CLARIFICATION (ask for the path) — not workspace_override.",
+      "",
+      "## Schema",
+      JSON.stringify({
+        status: "NEEDS_CLARIFICATION | NEEDS_RECON | READY",
+        display_title: "short product-style title, ideally 3-8 words",
+        clarification_question: "string — set when status is NEEDS_CLARIFICATION",
+        recon_subgoals: [
+          {
+            title: "Brief title for what to inspect",
+            objective: "Concrete read-only task, e.g. 'List server/workspace contents and read top-level files'",
+            success_criteria: ["What information must be returned"],
+            failure_criteria: ["Optional"],
+            constraints: ["Optional, e.g. 'Do not read files larger than 200KB'"]
+          }
+        ],
+        recon_rationale: "One short sentence explaining why recon is preferable to asking the user",
+        clarified_demand: "string — set when status is READY",
+        operational_objective: {
+          objective: "string",
+          acceptance_criteria: ["string"],
+          constraints: ["string"],
+          non_goals: ["string"],
+          termination_conditions: ["string"]
+        },
+        clarification_summary: "string — set when status is READY",
+        workspace_override: "absolute path string — set when the user named a specific output directory; otherwise omit / null"
+      })
+    ].join("\n");
+    const baseUserPrompt = `User demand:\n${input.rawInput}`;
+
+    // 抽出 LLM 调用，extraGuidance 不为 null 时用于 retry —— 把"上次缺了哪几个字段"作为
+    // 强提示拼到 userPrompt 末尾，请求模型重发完整 READY payload。
+    const callLlm = (extraGuidance: string | null): Promise<ClarifiedDemandResult> =>
+      this.llmClient.generateJson<ClarifiedDemandResult>({
         settings: input.settings,
         role: "planner",
         temperature: 0.1,
         maxTokens: 6000,
-        systemPrompt: [
-          "You are the clarification assistant for Nodikt v1.",
-          "Return valid JSON only.",
-          "Treat clarification as a short conversation inside a demand, not as one-shot form filling.",
-          "Do not change the user's goal semantics.",
-          "",
-          "## You have THREE possible decisions",
-          "",
-          '1. "NEEDS_CLARIFICATION" — Ask the user. Use this ONLY when the gap is something only the user knows:',
-          "   their goals, preferences, business choices, brand-new artifacts they want, decisions you cannot make for them.",
-          "",
-          '2. "NEEDS_RECON" — Dispatch a read-only worker to investigate. Use this when the gap is',
-          "   FACTUAL information that a worker can observe directly without bothering the user.",
-          "   The recon worker has access to ANY read-only / observational tool: local file inspection",
-          "   (Read / Glob / Grep / ls / cat / git status), Web lookup (WebFetch / WebSearch),",
-          "   read-only HTTP / API queries, and even delegated sub-investigations (Task).",
-          "   It cannot write or mutate anything — locally or remotely.",
-          "",
-          "   DO NOT ask the user for facts that a worker can simply look up. Asking the user for things",
-          "   the system can observe itself is the wrong choice.",
-          "",
-          "   Examples that should be NEEDS_RECON:",
-          "     * \"Refactor this repo\" without specifying which files — recon the repo structure.",
-          "     * \"The tank game in server/workspace\" — recon the directory to see what's there.",
-          "     * \"Add a test for the auth module\" — recon to find where the auth module lives.",
-          "     * \"Migrate to React 19\" — recon official React 19 migration docs (WebFetch / WebSearch).",
-          "     * \"Use the latest OpenAI API\" — recon the current API spec online.",
-          "     * Anything that asks for behavior consistent with an EXTERNAL reference whose current state we should check.",
-          "",
-          "   When choosing NEEDS_RECON, output 1-3 `recon_subgoals`. For each, write a concrete read-only objective",
-          "   that hints at what kind of inspection is needed.",
-          "",
-          '3. "READY" — Information is sufficient. Compile an operational_objective and move to planning.',
-          "",
-          "## Rules of thumb",
-          "- If a fact COULD be inspected (path exists, file content readable, online doc) but the user has not been asked yet, prefer NEEDS_RECON over NEEDS_CLARIFICATION.",
-          "- Only fall back to NEEDS_CLARIFICATION when the user has not specified a path/target at all, or when the question is genuinely a preference.",
-          "- Never combine NEEDS_CLARIFICATION and NEEDS_RECON in the same response — choose the most informative single next step.",
-          "",
-          "## Workspace override — IMPORTANT",
-          "If the user explicitly tells you WHERE to put the output (an absolute filesystem path like",
-          "`/home/user/projects/myapp` or `/volume/.../some-dir`), extract that path into the",
-          "`workspace_override` field — verbatim, just the directory path, no quotes, no surrounding text.",
-          "Rules:",
-          "- Only set this when the user names a directory (absolute path) as the destination. Don't guess.",
-          "- Trim trailing slashes.",
-          "- Leave it null/omit when the user did not specify an output location — the system has a default workspace.",
-          "- It's perfectly valid for a READY response to omit workspace_override.",
-          "- If the user says 'in my project folder' without giving the actual path, that's NEEDS_CLARIFICATION (ask for the path) — not workspace_override.",
-          "",
-          "## Schema",
-          JSON.stringify({
-            status: "NEEDS_CLARIFICATION | NEEDS_RECON | READY",
-            display_title: "short product-style title, ideally 3-8 words",
-            clarification_question: "string — set when status is NEEDS_CLARIFICATION",
-            recon_subgoals: [
-              {
-                title: "Brief title for what to inspect",
-                objective: "Concrete read-only task, e.g. 'List server/workspace contents and read top-level files'",
-                success_criteria: ["What information must be returned"],
-                failure_criteria: ["Optional"],
-                constraints: ["Optional, e.g. 'Do not read files larger than 200KB'"]
-              }
-            ],
-            recon_rationale: "One short sentence explaining why recon is preferable to asking the user",
-            clarified_demand: "string — set when status is READY",
-            operational_objective: {
-              objective: "string",
-              acceptance_criteria: ["string"],
-              constraints: ["string"],
-              non_goals: ["string"],
-              termination_conditions: ["string"]
-            },
-            clarification_summary: "string — set when status is READY",
-            workspace_override: "absolute path string — set when the user named a specific output directory; otherwise omit / null"
-          })
-        ].join("\n"),
-        userPrompt: `User demand:\n${input.rawInput}`
+        systemPrompt,
+        userPrompt: extraGuidance
+          ? `${baseUserPrompt}\n\n## CRITICAL FIX REQUIRED\n${extraGuidance}`
+          : baseUserPrompt
       });
+
+    // 返回当前 result 在 READY contract 下缺哪些字段；空数组代表完整。
+    const findMissingReadyFields = (raw: ClarifiedDemandResult): string[] => {
+      const missing: string[] = [];
+      if (!raw.operational_objective) missing.push("operational_objective");
+      if (typeof raw.clarified_demand !== "string" || !raw.clarified_demand.trim()) missing.push("clarified_demand");
+      if (typeof raw.clarification_summary !== "string" || !raw.clarification_summary.trim()) missing.push("clarification_summary");
+      if (typeof raw.operational_objective?.objective !== "string" || !raw.operational_objective.objective.trim()) {
+        missing.push("operational_objective.objective");
+      }
+      return missing;
+    };
+
+    let result: ClarifiedDemandResult;
+    try {
+      result = await callLlm(null);
     } catch (error) {
       if (!(error instanceof LlmInvocationError)) {
         throw error;
@@ -305,6 +334,67 @@ export class PlannerService {
         display_title: input.rawInput.trim().slice(0, 60) || "New Demand",
         clarification_question: `${prefix}. Underlying error: ${detail}`
       };
+    }
+
+    // READY 但 schema 不全是已知的 LLM 抖动（M2.5 在长 prompt + 多轮 recon 后偶发只回 summary 不回
+    // clarified_demand / operational_objective）。这种情况自动 retry 一次，把"缺了哪几个字段"作为
+    // 强指令塞回 prompt；retry 还不行再降级问用户。
+    if (result.status === "READY") {
+      const missing = findMissingReadyFields(result);
+      if (missing.length > 0) {
+        logger.warn({ missing }, "Clarifier 返回 READY 但 payload 不完整，尝试 retry 一次");
+        try {
+          const guidance = [
+            `Your previous response had status="READY" but OMITTED these required fields: ${missing.join(", ")}.`,
+            "When status is READY, you MUST emit the entire READY payload — re-emit the WHOLE JSON now:",
+            "  - status: \"READY\"",
+            "  - display_title: short product-style title",
+            "  - clarified_demand: the user's goal rewritten as one paragraph (non-empty string)",
+            "  - clarification_summary: one or two sentences explaining what was clarified (non-empty string)",
+            "  - operational_objective: {",
+            "      objective: a single-sentence buildable objective (non-empty string),",
+            "      acceptance_criteria: string[] (use [] if none),",
+            "      constraints: string[] (use [] if none),",
+            "      non_goals: string[] (use [] if none),",
+            "      termination_conditions: string[] (use [] if none)",
+            "    }",
+            "  - workspace_override: absolute path string or null",
+            "Do NOT change your decision. Do NOT skip any field. Output the complete READY JSON only."
+          ].join("\n");
+          const retried = await callLlm(guidance);
+          if (retried.status === "READY" && findMissingReadyFields(retried).length === 0) {
+            logger.info("Clarifier retry 成功，使用补全后的 READY payload");
+            result = retried;
+          } else if (retried.status === "NEEDS_CLARIFICATION") {
+            // Retry 时模型改主意了，照它说的问用户
+            logger.info("Clarifier retry 后改为 NEEDS_CLARIFICATION，转发给用户");
+            return {
+              status: "NEEDS_CLARIFICATION",
+              display_title: retried.display_title?.trim(),
+              clarification_question: retried.clarification_question?.trim()
+                || "I need a bit more from you to finalize the plan — could you confirm the objective and any constraints?"
+            };
+          } else {
+            // 仍是 READY 但还缺字段、或换成 NEEDS_RECON 又没给 subgoals —— 降级问用户
+            logger.warn({
+              retriedStatus: retried.status,
+              stillMissing: retried.status === "READY" ? findMissingReadyFields(retried) : null
+            }, "Clarifier retry 后仍无法得到完整 READY，降级问用户");
+            return {
+              status: "NEEDS_CLARIFICATION",
+              display_title: result.display_title?.trim() ?? retried.display_title?.trim(),
+              clarification_question: "I have enough context to plan but couldn't compile the objective automatically. Could you state the objective in one sentence + any must/must-not constraints?"
+            };
+          }
+        } catch (retryError) {
+          logger.warn({ err: retryError, missing }, "Clarifier retry 调用本身失败，降级问用户");
+          return {
+            status: "NEEDS_CLARIFICATION",
+            display_title: result.display_title?.trim(),
+            clarification_question: "I have enough context to plan but the model call to finalize it failed. Could you state the objective in one sentence + any must/must-not constraints?"
+          };
+        }
+      }
     }
 
     if (result.status === "NEEDS_CLARIFICATION") {
