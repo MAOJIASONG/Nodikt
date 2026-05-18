@@ -343,8 +343,27 @@ export class PlannerService {
       };
     }
 
-    if (!result.operational_objective || !result.clarified_demand || !result.clarification_summary) {
-      throw new Error("LLM clarification returned READY without complete objective payload");
+    // READY 分支需要的字段：clarified_demand / clarification_summary / operational_objective.objective
+    // 这三项任一缺失或非字符串都不能让 .trim() 直接抛 TypeError —— 它会把整条 recon→clarifier 链路
+    // 静默中断。降级成 NEEDS_CLARIFICATION 让用户补充。
+    const readyClarifiedDemand = typeof result.clarified_demand === "string" ? result.clarified_demand.trim() : "";
+    const readyClarificationSummary = typeof result.clarification_summary === "string" ? result.clarification_summary.trim() : "";
+    const readyObjectiveText = typeof result.operational_objective?.objective === "string"
+      ? result.operational_objective.objective.trim()
+      : "";
+
+    if (!result.operational_objective || !readyClarifiedDemand || !readyClarificationSummary || !readyObjectiveText) {
+      logger.warn({
+        hasClarifiedDemand: Boolean(readyClarifiedDemand),
+        hasSummary: Boolean(readyClarificationSummary),
+        hasObjective: Boolean(readyObjectiveText),
+        hasOperationalObjective: Boolean(result.operational_objective)
+      }, "Clarifier 返回 READY 但 payload 不完整，降级为 NEEDS_CLARIFICATION");
+      return {
+        status: "NEEDS_CLARIFICATION",
+        display_title: result.display_title?.trim(),
+        clarification_question: "I have enough context to plan, but the response was malformed. Could you confirm the objective in one sentence, plus any constraints I should respect?"
+      };
     }
 
     // 提取并清洗 workspace_override：只接受绝对路径（POSIX 风格 /xxx）
@@ -358,15 +377,15 @@ export class PlannerService {
     return {
       status: "READY",
       display_title: result.display_title?.trim(),
-      clarified_demand: result.clarified_demand.trim(),
+      clarified_demand: readyClarifiedDemand,
       operational_objective: {
-        objective: result.operational_objective.objective.trim(),
+        objective: readyObjectiveText,
         acceptance_criteria: normalizeStringArray(result.operational_objective.acceptance_criteria),
         constraints: normalizeStringArray(result.operational_objective.constraints),
         non_goals: normalizeStringArray(result.operational_objective.non_goals),
         termination_conditions: normalizeStringArray(result.operational_objective.termination_conditions)
       },
-      clarification_summary: result.clarification_summary.trim(),
+      clarification_summary: readyClarificationSummary,
       workspace_override: workspaceOverride
     };
   }

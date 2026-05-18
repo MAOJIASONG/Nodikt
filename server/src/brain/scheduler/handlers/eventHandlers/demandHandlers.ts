@@ -371,19 +371,53 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     const settings = await ctx.repositories.loadSettings();
     const timestamp = nowIso();
     logger.info({ demandId: demand.demand_id, inputKind: payload.input_kind }, "正在使用回复内容继续澄清需求");
-    const clarification = await ctx.planner.clarifyDemand({
-      rawInput: [
-        `Original demand: ${demand.initial_input}`,
-        `Clarification conversation so far: ${JSON.stringify(readConversationHistory(demand.metadata))}`,
-        demand.metadata?.clarification_question
-          ? `Previous clarification question: ${String(demand.metadata.clarification_question)}`
-          : "",
+    let clarification: Awaited<ReturnType<typeof ctx.planner.clarifyDemand>>;
+    try {
+      clarification = await ctx.planner.clarifyDemand({
+        rawInput: [
+          `Original demand: ${demand.initial_input}`,
+          `Clarification conversation so far: ${JSON.stringify(readConversationHistory(demand.metadata))}`,
+          demand.metadata?.clarification_question
+            ? `Previous clarification question: ${String(demand.metadata.clarification_question)}`
+            : "",
+          isReconFindings
+            ? `Recon findings from worker (system-generated, NOT a user message):\n${payload.input_text}`
+            : `User clarification reply: ${payload.input_text}`
+        ].filter(Boolean).join("\n"),
+        settings
+      });
+    } catch (clarifierError) {
+      // Critical: if clarifier throws (LLM returned malformed READY payload, TypeError on missing field,
+      // etc), the whole recon→clarifier loop deadlocks. Degrade gracefully — ask the user.
+      const detail = clarifierError instanceof Error ? clarifierError.message : String(clarifierError);
+      logger.error({ err: clarifierError, demandId: demand.demand_id, inputKind: payload.input_kind }, "Clarifier failed; degrading to ask user");
+      const fallbackQuestion = [
         isReconFindings
-          ? `Recon findings from worker (system-generated, NOT a user message):\n${payload.input_text}`
-          : `User clarification reply: ${payload.input_text}`
-      ].filter(Boolean).join("\n"),
-      settings
-    });
+          ? "Recon completed but I couldn't auto-summarize the findings to continue."
+          : "I couldn't process your reply automatically.",
+        `(internal: ${detail.slice(0, 200)})`,
+        "Could you tell me directly what you'd like me to do next? E.g.:",
+        "- Specific output path / framework / language",
+        "- Or 'just go ahead with X' to skip remaining ambiguity"
+      ].join("\n");
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        metadata: {
+          ...appendConversationTurns(demand.metadata, [
+            isReconFindings
+              ? { role: "assistant" as const, content: `[Recon findings]\n${payload.input_text}`, created_at: timestamp }
+              : { role: "user" as const, content: payload.input_text, created_at: timestamp },
+            { role: "assistant" as const, content: fallbackQuestion, created_at: timestamp }
+          ]),
+          clarification_question: fallbackQuestion,
+          recon_in_progress: false
+        }
+      }, {
+        phase: DemandPhase.ALIGNMENT,
+        waiting_on: "user_clarification",
+        progress_note: "Clarifier failed, asking user"
+      }));
+      return {};
+    }
 
     // 把这一轮的输入写进对话历史。来自 recon worker 用 "assistant" 前缀标识便于前端区分
     const incomingTurn = isReconFindings
