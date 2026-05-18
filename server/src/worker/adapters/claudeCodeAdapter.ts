@@ -412,6 +412,15 @@ export class ClaudeCodeAdapter extends BaseLocalCommandAdapter {
       args.push("--resume", resumeSessionId);
     }
 
+    // Claude Code 默认沙箱只允许 cwd（workspaceRoot）下的 Bash/Read。
+    // 当 dispatcher 把额外可访问路径塞进 environment_notes.workspace_allowed_paths
+    // （典型场景：用户在 PATH_GRANT 决策批准了一个输出目录，源代码仍在 settings.workspace_root），
+    // 这里把它们转成 --add-dir 传给 claude CLI，否则 worker 会因为读不到源文件直接 NEED_HELP。
+    const extraReadablePaths = readAllowedPaths(packet).filter((p) => p && p !== workspaceRoot);
+    for (const extra of extraReadablePaths) {
+      args.push("--add-dir", extra);
+    }
+
     // 初始化解析状态，便于后续 onStdoutLine 写入
     this.parsedByExecution.set(packet.execution_id, createInitialState());
 
