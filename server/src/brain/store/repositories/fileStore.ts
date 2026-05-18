@@ -67,7 +67,18 @@ export class JsonFileStore {
   async readCollection<TItem>(fileName: string): Promise<CollectionFile<TItem>> {
     await this.waitForPendingWrite(fileName);
     const filePath = path.join(this.baseDir, fileName);
-    const raw = await fs.readFile(filePath, "utf8");
+    let raw: string;
+    try {
+      raw = await fs.readFile(filePath, "utf8");
+    } catch (error) {
+      // 文件不存在（典型场景：全新机器 clone 后第一次启动，server/data/*.json 都被 gitignore
+      // 没进仓库）→ 返回空集合骨架，让 caller 把它当成空集合处理。后续任何 upsert 都会
+      // 通过 writeCollection 原子创建出真实文件。
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        return { version: "v1", items: [], updated_at: nowIso() };
+      }
+      throw error;
+    }
     return JSON.parse(raw) as CollectionFile<TItem>;
   }
 
