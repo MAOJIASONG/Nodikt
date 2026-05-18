@@ -227,21 +227,50 @@ Step 6  重新规划（Replan）
 
 ## 快速开始
 
-> 🚧 **项目正在积极开发中**，以下为规划中的使用方式，完整的安装与使用文档将随版本迭代持续更新。
+> 🚧 **项目仍在积极开发中**，下述流程已可跑通最小闭环；完整的安装与使用文档将随版本迭代持续完善。
+
+### 环境依赖
+
+| 组件 | 版本 / 说明 |
+|------|------|
+| **Node.js** | ≥ 20（推荐 20.20.1，可用 `nvm install 20.20.1`） |
+| **Claude Code CLI** | 可选；若启用 Claude Worker，需 `npm install -g @anthropic-ai/claude-code` 并完成 `claude login` |
+| **LLM API Key** | 至少配置一组（Brain 的 primary / planner / verifier / ops_backup 模型） |
+
+### 一键启动
 
 ```bash
-# 克隆仓库
+# 1. 克隆仓库
 git clone https://github.com/MAOJIASONG/Nodikt.git
 cd Nodikt
 
-# 安装依赖（requirements.txt 将随首个可用版本一同发布）
-pip install -r requirements.txt
+# 2. 启动（首次运行会自动安装依赖、复制 .env 与 settings 模板）
+bash start.sh
+```
 
-# 启动 Brain 服务（以下模块路径为规划中的实现，尚未发布）
-python -m nodikt.brain
+首次执行 `start.sh` 会在以下两个位置生成配置模板，**编辑完后再次执行 `bash start.sh` 即可启动**：
 
-# 启动 Interface
-python -m nodikt.interface
+- `.env` — 运行时环境变量（端口、Claude Code CLI 路径、权限模式等）
+- `server/data/settings.json` — 核心业务配置，需填入：
+  - `models.{primary,planner,verifier,ops_backup}.api_key` — 你的 LLM Key
+  - `workspace_root` — Worker 执行所在的工作区绝对路径
+
+### 访问入口
+
+启动成功后：
+
+- 🖥️ **Web 控制台**：http://localhost:5173
+- 🧠 **Brain API**：http://localhost:3001
+
+### 常用命令
+
+```bash
+bash start.sh           # 启动（自动检测是否需要 install / build）
+bash start.sh status    # 查看 server / web 的 PID、端口、日志路径
+bash start.sh logs      # 实时跟随两端日志
+bash start.sh restart   # 重启
+bash start.sh stop      # 停止后台进程
+bash start.sh reinstall # 强制重新安装依赖并构建
 ```
 
 ---
