@@ -156,12 +156,25 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
   const memorySnapshot = await ctx.memoryManager.getDispatchMemorySnapshot(ctx.repositories, demand.demand_id);
   const workspaceGrants = collectWorkspaceGrants(settings, demand);
 
-  // Claude Code worker 跨 subgoal 续接 session：找最近一条带 claude_session_id 的同 demand execution
+  // Claude Code worker 续接 session：仅在**同一 subgoal 的成功 prior execution** 之间复用。
+  //
+  // 历史 bug：之前的实现按 demand_id 查所有 prior，包括 recon kind 的 session 和上一次失败
+  // (num_turns=0, result=error_during_execution) 的 session。结果是 build 阶段第一次派发会
+  // 拿 recon 的 session id 来 --resume，Claude Code 立刻 error_during_execution 退出（recon
+  // session 已 finalized）；retry 又 resume 上一次的失败 session，再死一次。
+  //
+  // 现在只在 (a) 同 subgoal_id (b) state === DONE 的 prior 里找 session id —— 这正好覆盖
+  // 真正需要续接的场景：同一 subgoal 的 retry / verification 反馈后的再次执行。跨 subgoal
+  // 的信息传递走 memory snapshot + execution_guidance，不再依赖 Claude 内部 session 状态。
   let claudeResumeSessionId: string | null = null;
   if (worker.adapter_type === "claude_code") {
     const allExecutions = await ctx.repositories.executions.list();
     const priors = allExecutions
-      .filter((item) => item.demand_id === demand.demand_id && item.execution_id !== execution.execution_id)
+      .filter((item) =>
+        item.subgoal_id === subgoal.subgoal_id
+        && item.execution_id !== execution.execution_id
+        && item.state === ExecutionState.DONE
+      )
       .sort((left, right) => (right.created_at ?? "").localeCompare(left.created_at ?? ""));
     for (const prior of priors) {
       const meta = (prior.adapter_meta ?? {}) as Record<string, unknown>;
@@ -170,10 +183,11 @@ export async function onExecutionDispatched(event: SchedulerEvent, ctx: HandlerC
         claudeResumeSessionId = sid;
         logger.info({
           demandId: demand.demand_id,
+          subgoalId: subgoal.subgoal_id,
           executionId: execution.execution_id,
           priorExecutionId: prior.execution_id,
           claudeResumeSessionId
-        }, "为 Claude Code 派发注入上一次会话 ID 用于续接");
+        }, "为 Claude Code 派发注入上一次会话 ID 用于续接（同 subgoal, prior DONE）");
         break;
       }
     }
