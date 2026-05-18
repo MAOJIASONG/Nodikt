@@ -749,17 +749,35 @@ export async function onDecisionRequestCreated(event: SchedulerEvent, ctx: Handl
   const payload = event.payload as { decision_request: any };
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (demand) {
-    logger.info({ demandId: demand.demand_id, decisionId: payload.decision_request.decision_id, reasonCode: payload.decision_request.reason_code }, "正在保存决策请求");
-    await ctx.repositories.demands.upsert(transitionDemand(demand, {
-      state: DemandState.PENDING_DECISION,
-      current_phase: DemandPhase.REVIEW,
-      active_decision_id: payload.decision_request.decision_id
-    }, {
-      phase: DemandPhase.REVIEW,
-      waiting_on: "user_decision",
-      latest_checkpoint: payload.decision_request.decision_id,
-      progress_note: `Decision required: ${payload.decision_request.reason_code}`
-    }));
+    const reasonCode = payload.decision_request.reason_code;
+    logger.info({ demandId: demand.demand_id, decisionId: payload.decision_request.decision_id, reasonCode }, "正在保存决策请求");
+
+    // PATH_GRANT_REQUIRED 在 clarification 阶段（PENDING_ALIGNMENT）就会弹，
+    // 状态机不允许 PENDING_ALIGNMENT → PENDING_DECISION 直推。
+    // 此时保持 demand 当前 state/phase 不动，只挂上 active_decision_id + waiting_on=user_decision。
+    // 用户答完决策后由 handlePathGrantDecision 自己负责推进状态。
+    const isAlignmentTimeDecision = demand.state === DemandState.PENDING_ALIGNMENT;
+    if (isAlignmentTimeDecision) {
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        active_decision_id: payload.decision_request.decision_id
+      }, {
+        phase: demand.current_phase,
+        waiting_on: "user_decision",
+        latest_checkpoint: payload.decision_request.decision_id,
+        progress_note: `Decision required during alignment: ${reasonCode}`
+      }));
+    } else {
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        state: DemandState.PENDING_DECISION,
+        current_phase: DemandPhase.REVIEW,
+        active_decision_id: payload.decision_request.decision_id
+      }, {
+        phase: DemandPhase.REVIEW,
+        waiting_on: "user_decision",
+        latest_checkpoint: payload.decision_request.decision_id,
+        progress_note: `Decision required: ${reasonCode}`
+      }));
+    }
   } else {
     logger.warn({ demandId: event.demand_id, decisionId: payload.decision_request.decision_id }, "正在保存决策请求，但未找到对应需求");
   }
