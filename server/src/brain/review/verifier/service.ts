@@ -348,11 +348,20 @@ export class VerifierService {
       verifiedStatus = VerificationStatus.UNVERIFIABLE;
       notes = "No criteria could be verified from the execution history";
     } else if (unsatisfied.length === 0) {
-      // All satisfied or unverifiable, none unsatisfied
-      verifiedStatus = acceptedArtifacts.length > 0
-        ? VerificationStatus.VERIFIED_DONE
-        : VerificationStatus.PARTIAL;
-      notes = `All ${satisfied.length} criteria satisfied`;
+      // 所有 criterion 都满足（或部分 unverifiable 但无 unsatisfied）→ 信任 LLM 判定为 VERIFIED_DONE。
+      //
+      // 之前这里有个硬约束：`acceptedArtifacts.length > 0 ? VERIFIED_DONE : PARTIAL`，导致**纯文本任务**
+      // （分析、总结、回答问题、explain 类的）即使所有 criteria 都满足也只能拿 PARTIAL，触发自动 replan，
+      // 下一轮 worker 同样吐文字答案、verifier 同样判 PARTIAL，无限循环。
+      //
+      // 如果 success_criteria 真的要求"产出文件 X"，worker 没产，LLM 看 execution_history 时就会判
+      // 这条 criterion 为 unsatisfied —— 该走 PARTIAL 的还是会走 PARTIAL。不要在 LLM 之上再加一层
+      // 一刀切的 artifact 硬约束。
+      verifiedStatus = VerificationStatus.VERIFIED_DONE;
+      const artifactNote = acceptedArtifacts.length > 0
+        ? `, ${acceptedArtifacts.length} artifact(s) accepted`
+        : ", text-only result (no file artifact required)";
+      notes = `All ${satisfied.length} criteria satisfied${artifactNote}`;
       if (!llmResult.outcome_consistent && llmResult.outcome_inconsistency_notes) {
         notes += `. Note: claimed outcome inconsistency — ${llmResult.outcome_inconsistency_notes}`;
       }
@@ -392,15 +401,24 @@ export class VerifierService {
     let verifiedStatus: VerificationStatus;
     let notes: string;
 
-    if (workerResult.worker_status === "DONE" && acceptedArtifacts.length > 0) {
+    // LLM 不可用时的启发式降级：worker DONE + (有文件 artifact 或有 claimed_outcome 文字答案) → VERIFIED_DONE。
+    // 之前这条 fallback 强制要求 acceptedArtifacts.length > 0 才算 DONE，否则视为 FAILED；
+    // 这导致 LLM 网络故障时所有纯文本任务（分析/总结/explain）被一刀切判 FAILED。
+    // 既然 LLM 不可用没法精验，至少要尊重 worker 自报和它实际产出的形式（文字或文件）。
+    const hasArtifact = acceptedArtifacts.length > 0;
+    const hasTextOutcome = (workerResult.claimed_outcome?.trim().length ?? 0) > 0;
+
+    if (workerResult.worker_status === "DONE" && (hasArtifact || hasTextOutcome)) {
       verifiedStatus = VerificationStatus.VERIFIED_DONE;
-      notes = `Produced artifacts exist and contain materialized files. ${extraNotes}`;
+      notes = hasArtifact
+        ? `Produced artifacts exist and contain materialized files. ${extraNotes}`
+        : `Worker DONE with text-only outcome (no artifact required). ${extraNotes}`;
     } else if (workerResult.worker_status === "PARTIAL") {
       verifiedStatus = VerificationStatus.PARTIAL;
       notes = `Partial progress observed. ${extraNotes}`;
     } else {
       verifiedStatus = VerificationStatus.FAILED;
-      notes = `Worker reported DONE but no materialized files were found. ${extraNotes}`;
+      notes = `Worker reported DONE but neither artifacts nor a text outcome were produced. ${extraNotes}`;
     }
 
     return {
