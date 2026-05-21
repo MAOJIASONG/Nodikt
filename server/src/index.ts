@@ -20,8 +20,22 @@ const CLAUDE_CODE_RUNTIME_HOME =
 const CLAUDE_CODE_PERMISSION_MODE =
   process.env.CLAUDE_CODE_PERMISSION_MODE
   || "bypassPermissions";
+/**
+ * Claude Code 默认允许的工具集。
+ *
+ * 为什么需要默认：permission_mode=acceptEdits 时只有文件编辑工具自动放行，
+ * 其他工具（Bash / WebFetch / WebSearch / Glob / Grep / Task）需要 --allowedTools
+ * 显式授权，否则在 headless（无人审批）模式下会被当成"用户拒绝"。
+ *
+ * 用户可以通过 .env 的 CLAUDE_CODE_ALLOWED_TOOLS 覆盖（逗号分隔的工具名）。
+ */
+const DEFAULT_CLAUDE_CODE_ALLOWED_TOOLS =
+  "Read,Write,Edit,MultiEdit,NotebookEdit,Bash,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite";
+
 const CLAUDE_CODE_ALLOWED_TOOLS =
-  process.env.CLAUDE_CODE_ALLOWED_TOOLS ?? "";
+  (process.env.CLAUDE_CODE_ALLOWED_TOOLS && process.env.CLAUDE_CODE_ALLOWED_TOOLS.trim().length > 0)
+    ? process.env.CLAUDE_CODE_ALLOWED_TOOLS
+    : DEFAULT_CLAUDE_CODE_ALLOWED_TOOLS;
 const CLAUDE_CODE_DISALLOWED_TOOLS =
   process.env.CLAUDE_CODE_DISALLOWED_TOOLS ?? "";
 
