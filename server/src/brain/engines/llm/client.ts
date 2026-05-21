@@ -275,8 +275,27 @@ export class LlmClient {
     }
   }
 
+  /**
+   * 剥掉模型在最终答案前夹的"思考链"标签段（含内容）。
+   *
+   * 涵盖：<think>…</think> / <thinking>…</thinking> / <reasoning>…</reasoning> / <reflection>…</reflection>
+   * 这些都是 thinking-style 模型（MiniMax M2.5、DeepSeek R1、QwQ 等）会主动产出的标签。
+   * 思考块内部经常出现示例 JSON / 伪代码 / 大括号，对 JSON 提取干扰极大；先剥掉再做提取最稳。
+   *
+   * 注意：用非贪婪 + 多标签，且 case-insensitive。未闭合的 <think> 也吞掉（有些模型截断在思考中间）。
+   */
+  private stripThinkingTags(text: string): string {
+    let cleaned = text;
+    // 1) 配对完整的 <think>…</think>（及别名）
+    cleaned = cleaned.replace(/<\s*(think|thinking|reasoning|reflection)\s*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "");
+    // 2) 未闭合的 <think> 标签（截断 / 流式没收尾）：从开标签一直吞到字符串末尾
+    cleaned = cleaned.replace(/<\s*(think|thinking|reasoning|reflection)\s*>[\s\S]*$/i, "");
+    return cleaned;
+  }
+
   private extractJson(text: string): string {
-    const trimmed = text.trim();
+    const cleaned = this.stripThinkingTags(text);
+    const trimmed = cleaned.trim();
     if (!trimmed) {
       throw new LlmInvocationError("LLM response was empty");
     }
@@ -292,14 +311,17 @@ export class LlmClient {
 
     const balanced = this.findBalancedJsonCandidates(trimmed);
     if (balanced.length > 0) {
-      return balanced.sort((left, right) => right.length - left.length)[0];
+      // 优先取最后一个 —— thinking models 通常把最终答案放在末尾；之前用"最长的"会错选中间的示例 JSON。
+      return balanced[balanced.length - 1];
     }
 
     throw new LlmInvocationError("No JSON object found in LLM response");
   }
 
   private parseJsonResponse<T>(text: string): T {
-    const directCandidates = [text.trim()].filter(Boolean);
+    // 整段文本（剥过 think 标签后）先尝试直接 JSON.parse，再尝试 extractJson 的输出。
+    const cleaned = this.stripThinkingTags(text);
+    const directCandidates = [cleaned.trim(), text.trim()].filter(Boolean);
     try {
       directCandidates.push(this.extractJson(text).trim());
     } catch {
@@ -313,8 +335,11 @@ export class LlmClient {
       }
     }
 
-    const balancedCandidates = this.findBalancedJsonCandidates(text);
-    for (const candidate of balancedCandidates.sort((left, right) => right.length - left.length)) {
+    // 平衡候选最后兜底 —— 只在剥过 think 后的文本里找，"取最后一个"（thinking 模型答案在末尾）。
+    // 不回到含 think 标签的原文找，否则会误把思考链里的伪 JSON / 截断片段当成答案；
+    // 真截断时让 caller（如 clarifier）走自己的降级路径。
+    const cleanedCandidates = this.findBalancedJsonCandidates(cleaned);
+    for (const candidate of [...cleanedCandidates].reverse()) {
       const parsed = this.tryParseJson(candidate);
       if (parsed !== undefined) {
         return parsed as T;
