@@ -841,28 +841,40 @@ small,
   color: var(--red);
 }
 
-/* sidebar 上的删除按钮——复用 board-delete 视觉，加微调让它在 demand-link flex 里贴右边 */
+/* sidebar 上的删除按钮——比 board-delete 更低调，避免跟旁边的绿色 ✓ 完成圆环抢视线 */
 .demand-link-delete {
-  border: 1px solid var(--line-strong);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;        /* 默认无边框，hover 才显示 */
   border-radius: var(--radius-sm);
-  background: #000;
-  color: var(--text);
+  background: transparent;
+  color: var(--muted-2);
   cursor: pointer;
   flex-shrink: 0;
-  margin-left: 6px;
-  font-size: 14px;
+  margin-left: 14px;                    /* 跟 .demand-progress 拉开 14px，避免红 × 边框紧贴绿 ✓ 圆环 */
+  font-size: 16px;
   line-height: 1;
-  transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease;
-  opacity: 0.5;
+  opacity: 0.35;                        /* 默认低存在感 */
+  transition: opacity 0.18s ease, border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+
+.demand-link:hover .demand-link-delete {
+  opacity: 0.7;                         /* hover 整条 demand 时让 × 浮现 */
 }
 
 .demand-link-delete:hover {
   opacity: 1;
-  transform: translateY(-1px);
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(239, 90, 90, 0.08);
 }
 
 .demand-link-delete:disabled {
-  opacity: 0.3;
+  opacity: 0.2;
   cursor: not-allowed;
 }
 
