@@ -69,8 +69,16 @@ export class LlmClient {
     this.validateConfig(config);
     const provider = config.provider.toLowerCase();
 
+    // 三种支持的 LLM 协议入口，按 provider 字段路由：
+    //   - "anthropic" / "anthropic-messages" 或 model 含 "claude" → Anthropic Messages API (/v1/messages)
+    //   - "openai-responses" / "responses" → OpenAI Responses API (/v1/responses)，推荐给 gpt-5 / o1 / o3 等 reasoning models
+    //   - 其它（含 "openai" / "openai-compatible" / MiniMax / DeepSeek / Qwen / SiliconFlow 等兼容服务）→ OpenAI Chat Completions (/v1/chat/completions)
     if (provider.includes("anthropic") || config.model.toLowerCase().includes("claude")) {
       return this.callAnthropic(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
+    }
+
+    if (provider.includes("responses") || provider === "openai-responses") {
+      return this.callOpenAiResponses(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
     }
 
     return this.callOpenAiCompatible(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
@@ -210,6 +218,113 @@ export class LlmClient {
       throw new LlmInvocationError("Anthropic response returned empty content");
     }
     return text;
+  }
+
+  /**
+   * 调用 OpenAI Responses API (POST {base_url}/responses)。
+   *
+   * 这是 OpenAI 2024 推出的新协议，用于统一处理：
+   *   - reasoning models（o1 / o3 / gpt-5）—— 它们不接受老的 temperature/max_tokens 老参数
+   *   - 结构化输出（text.format）
+   *   - tool calling / streaming（暂不在本实现范围内）
+   *
+   * 协议细节（跟 chat/completions 的差异）：
+   *   - body 用 `input` 而不是 `messages`
+   *   - body 用 `max_output_tokens` 而不是 `max_tokens`
+   *   - JSON 强制约束放在 `text.format.type` 而不是 `response_format`
+   *   - 响应里有便捷字段 `output_text`，没有就遍历 `output[].content[].text`
+   *
+   * 兼容降级：
+   *   - 上游若不识别 `text.format`（部分自托管 reasoning 网关），自动 retry 不带格式约束
+   *   - reasoning model 不接受 temperature 不是 1 / 不支持 system，这里仍传 system，依赖上游忽略或报错让 caller 处理
+   */
+  private async callOpenAiResponses(
+    config: ModelConfig,
+    systemPrompt: string,
+    userPrompt: string,
+    temperature = 0.1,
+    maxTokens = 4000
+  ): Promise<string> {
+    const baseBody: Record<string, unknown> = {
+      model: config.model,
+      input: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature,
+      max_output_tokens: maxTokens
+    };
+
+    let response: any;
+    try {
+      response = await this.postJson(
+        `${config.base_url.replace(/\/$/, "")}/responses`,
+        {
+          Authorization: `Bearer ${config.api_key}`,
+          "Content-Type": "application/json"
+        },
+        {
+          ...baseBody,
+          text: { format: { type: "json_object" } }
+        }
+      );
+    } catch (error) {
+      const message = String((error as Error).message ?? "");
+      // 不支持 text.format / json_object 的网关：去掉格式约束重试。
+      if (!/text\.format|json_object|unsupported|invalid|response_format/i.test(message)) {
+        throw error;
+      }
+      response = await this.postJson(
+        `${config.base_url.replace(/\/$/, "")}/responses`,
+        {
+          Authorization: `Bearer ${config.api_key}`,
+          "Content-Type": "application/json"
+        },
+        baseBody
+      );
+    }
+
+    const text = this.extractResponsesText(response);
+    if (!text.trim()) {
+      throw new LlmInvocationError("OpenAI Responses API returned empty content");
+    }
+    return text;
+  }
+
+  /**
+   * 从 Responses API 响应体里抽取最终文本。
+   * 优先用便捷字段 `output_text`；没有就遍历 `output[].content[].text`（type === "output_text" 的块）。
+   */
+  private extractResponsesText(response: unknown): string {
+    if (response && typeof response === "object") {
+      const obj = response as Record<string, unknown>;
+      if (typeof obj.output_text === "string" && obj.output_text.trim().length > 0) {
+        return obj.output_text;
+      }
+      const output = obj.output;
+      if (Array.isArray(output)) {
+        const chunks: string[] = [];
+        for (const item of output) {
+          if (!item || typeof item !== "object") continue;
+          const itemObj = item as Record<string, unknown>;
+          if (itemObj.type !== "message") continue;
+          const content = itemObj.content;
+          if (!Array.isArray(content)) continue;
+          for (const block of content) {
+            if (!block || typeof block !== "object") continue;
+            const blockObj = block as Record<string, unknown>;
+            // 兼容 "output_text" 和老的 "text" 两种 type 命名
+            if ((blockObj.type === "output_text" || blockObj.type === "text") && typeof blockObj.text === "string") {
+              chunks.push(blockObj.text);
+            }
+          }
+        }
+        if (chunks.length > 0) {
+          return chunks.join("");
+        }
+      }
+    }
+    return "";
   }
 
   private async postJson(
