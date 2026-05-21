@@ -353,6 +353,9 @@ export function App() {
   const planTransitionTimerRef = useRef<number | null>(null);
   const createSessionRef = useRef(0);
   const detailRequestRef = useRef(0);
+  // 打开 Create Demand 弹窗之前的 activeDemandId 快照 —— 用 ref 而不是 state，
+  // 避免它参与渲染。closeCreateModal 用它判断"应该回到哪个 demand 详情"。
+  const previousActiveDemandIdRef = useRef<string | null>(null);
   const visibleTimelineEvents = detail
     ? detail.events.filter((item) => item.event_type !== "WORKER_HEARTBEAT_RECEIVED")
     : [];
@@ -1273,6 +1276,9 @@ export function App() {
   }
 
   function openCreateDemandPanel() {
+    // 先把当前的 activeDemandId 拍快照 —— invalidateDemandView 会清掉它，
+    // 但关闭弹窗时要靠这个快照恢复原详情页（review 反馈：点 + 进创建，关闭后必须回原 demand）。
+    previousActiveDemandIdRef.current = activeDemandId;
     invalidateDemandView({ resetComposer: true });
     setTab("Dashboard");
     setDashboardView("create");
@@ -1280,21 +1286,28 @@ export function App() {
 
   function returnToBoard() {
     invalidateDemandView();
+    previousActiveDemandIdRef.current = null;
     setDashboardView("board");
     setSelectedSubgoalDialog(null);
   }
 
   /**
-   * 关闭 Create Demand 弹窗的"软关闭"行为：
-   * - 如果用户从某个 demand 详情页打开了创建窗口（activeDemandId 非空且 demand 尚未创建完毕），
-   *   关闭只切回那个详情页，不清 detail 数据，符合"只关掉这个弹窗"的直觉
-   * - 否则（直接从 board 进创建）回 board
-   * 这是 review feedback：点退出应回上一个具体 demand 页面，而不是直接被踢回主界面。
+   * 关闭 Create Demand 弹窗的"软关闭"行为 —— 从哪来回哪去：
+   * - 入弹窗前如果在某 demand 详情页，关闭就用快照恢复 activeDemandId + 重新加载 detail
+   *   → 视图回到那个 demand 详情，不丢上下文
+   * - 入弹窗前在 board，关闭就回 board
+   * 实现关键：openCreateDemandPanel 会把 activeDemandId 写进 previousActiveDemandIdRef，
+   * 因为 invalidateDemandView 会把 activeDemandId 自己清掉，这里不能直接依赖它。
    */
   function closeCreateModal() {
     setSelectedSubgoalDialog(null);
-    if (activeDemandId) {
+    const prevId = previousActiveDemandIdRef.current;
+    previousActiveDemandIdRef.current = null;
+    if (prevId) {
+      setActiveDemandId(prevId);
       setDashboardView("detail");
+      // detail 数据已经被 invalidateDemandView 清掉，回详情前要触发一次重新加载
+      void loadDemandDetail(prevId);
     } else {
       setDashboardView("board");
     }
@@ -2390,7 +2403,7 @@ export function App() {
                               />
                             </label>
                             <div className="modal-actions">
-                              <button className="ghost-button" onClick={returnToBoard}>Cancel</button>
+                              <button className="ghost-button" onClick={closeCreateModal}>Cancel</button>
                               <button className="primary" disabled={replySubmitting || !clarificationReply.trim()} onClick={sendClarificationReply}>{replySubmitting ? "Sending..." : "Send Clarification Reply"}</button>
                             </div>
                           </>
@@ -2409,7 +2422,7 @@ export function App() {
                           placeholder="Describe the demand, expected output, project path, and key constraints"
                         />
                         <div className="modal-actions">
-                          <button className="ghost-button" onClick={returnToBoard}>Cancel</button>
+                          <button className="ghost-button" onClick={closeCreateModal}>Cancel</button>
                           <button className="primary" disabled={createSubmitting || !newDemand.trim()} onClick={createDemand}>{createSubmitting ? "Creating..." : "Create Demand"}</button>
                         </div>
                       </>
