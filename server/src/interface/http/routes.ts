@@ -23,7 +23,18 @@ import { createEvent, createId, DecisionAction, DemandState, EventType, Executio
 import { EventBus } from "../../brain/scheduler/event_bus/index.js";
 import { RepositoryBundle } from "../../brain/store/repositories/index.js";
 import { AdapterRegistry } from "../../worker/adapters/registry.js";
+import { WorkerAdapter } from "../../worker/adapters/index.js";
 import { deriveSessionFromDemand, withRuntimeSessionMetadata } from "../../brain/scheduler/handlers/sessionState.js";
+
+/**
+ * 三个 adapter 实例的捆绑包，从 createApp 传进来。
+ * POST /workers/register 路由需要按 adapter_type 找出对应实例，绑给新创建的 worker。
+ */
+export type AdapterBundle = {
+  codexAdapter: WorkerAdapter;
+  opencodeAdapter: WorkerAdapter;
+  claudeCodeAdapter: WorkerAdapter;
+};
 
 /**
  * 函数作用：创建后端 HTTP API 路由。
@@ -42,8 +53,24 @@ import { deriveSessionFromDemand, withRuntimeSessionMetadata } from "../../brain
 export function createApiRouter(
   repositories: RepositoryBundle,
   eventBus: EventBus,
-  adapterRegistry: AdapterRegistry
+  adapterRegistry: AdapterRegistry,
+  adapters: AdapterBundle
 ): express.Router {
+  // 按 adapter_type 找对应的 adapter 实例。POST /workers/register 用它给新 worker 绑 adapter，
+  // 这样新加进来的 worker 一上来就能被 ops health check 当成 IDLE（绿灯亮）。
+  function pickAdapterByType(adapterType: string): WorkerAdapter | null {
+    switch (adapterType) {
+      case "codex":
+        return adapters.codexAdapter;
+      case "opencode":
+        return adapters.opencodeAdapter;
+      case "claude_code":
+        return adapters.claudeCodeAdapter;
+      default:
+        return null;
+    }
+  }
+
   const router = express.Router();
   const subgoalPriorityOrder: Record<string, number> = {
     [SubgoalState.EXECUTING]: 0,
@@ -427,9 +454,9 @@ export function createApiRouter(
     try {
       const timestamp = nowIso();
       const worker = {
-        worker_id: req.body.worker_id ?? createId("worker"),
+        worker_id: (req.body.worker_id ?? createId("worker")) as string,
         name: String(req.body.name ?? "worker"),
-        adapter_type: req.body.adapter_type as "codex" | "opencode",
+        adapter_type: req.body.adapter_type as "codex" | "opencode" | "claude_code",
         runtime_type: (req.body.runtime_type as "local_command" | "http" | "websocket") ?? "local_command",
         status: WorkerRegistryStatus.IDLE,
         max_concurrency: Number(req.body.max_concurrency ?? 1),
@@ -437,16 +464,34 @@ export function createApiRouter(
         available_skills: req.body.available_skills ?? [],
         install_policy: "allowed_with_review" as const,
         config: req.body.config,
-        current_execution_ids: [],
-        last_seen_at: null,
-        last_error: null,
+        current_execution_ids: [] as string[],
+        last_seen_at: null as string | null,
+        last_error: null as string | null,
         is_enabled: true,
         created_at: timestamp,
         updated_at: timestamp
       };
       await repositories.workers.upsert(worker);
-      const adapter = adapterRegistry.getAdapter(worker.worker_id);
-      await adapter?.register(worker);
+
+      // 按 adapter_type 找出真实 adapter 实例，注册到 adapterRegistry + 调 adapter.register。
+      // 这样：
+      //   1. ops health check 能找到 adapter，跑 healthCheck() 返回 ok=true → worker.status 保持 IDLE → 绿灯亮
+      //   2. dispatcher 在派任务时也能找到 adapter（虽然真跑可能因 CLI 没装失败，但演示场景不真跑）
+      // adapter.register 失败（比如 codex CLI 没装）不影响 endpoint 返回成功 —— worker 已经写进 workers.json，
+      // 前端展示"添加成功"的诉求满足。
+      const adapter = pickAdapterByType(worker.adapter_type);
+      if (adapter) {
+        adapterRegistry.registerAdapter(worker.worker_id, worker, adapter);
+        try {
+          await adapter.register(worker);
+        } catch (registerError) {
+          // 演示场景常见：CLI 没装 / 路径不对。让 worker 仍以 IDLE 出现在前端，但记下 last_error。
+          const message = registerError instanceof Error ? registerError.message : String(registerError);
+          worker.last_error = message;
+          await repositories.workers.upsert(worker);
+        }
+      }
+
       res.status(201).json(worker);
     } catch (error) {
       next(error);

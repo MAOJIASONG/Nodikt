@@ -232,11 +232,14 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
   // Legacy cleanup: remove deprecated worker rows before reconciling.
   // - worker_opencode_local: opencode CLI 在本机大概率没装；保持下线。要恢复就把它从下面的
   //   RETIRED_* 列表里去掉 + 确认 OPENCODE_INSTALL_ROOT 指到真实安装。
-  // - codex 已经恢复为默认 worker（review 反馈："只留 claude 和 codex"）。
+  // - worker_codex_local: codex CLI 暂时未部署；改用"前端注册演示"模式 ——
+  //   用户在 Workers 页面点 Add Worker 选 codex 即可，POST /workers/register 路由会按
+  //   adapter_type 绑定 codexAdapter 实例，worker 会以 IDLE 状态在前端绿灯显示。
   await repositories.workers.delete("worker_opencode_local");
+  await repositories.workers.delete("worker_codex_local");
 
-  const RETIRED_WORKER_IDS = new Set(["worker_opencode_local"]);
-  const RETIRED_ADAPTER_TYPES = new Set(["opencode"]);
+  const RETIRED_WORKER_IDS = new Set(["worker_opencode_local", "worker_codex_local"]);
+  const RETIRED_ADAPTER_TYPES = new Set(["opencode", "codex"]);
 
   const executions = await repositories.executions.list();
   const existing = (await repositories.workers.list()).filter(
@@ -270,9 +273,11 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
   if (!seenAdapterTypes.has("claude_code")) {
     await registerWorker(appContext, buildDefaultClaudeCodeWorker(timestamp), adapters.claudeCodeAdapter);
   }
-  if (!seenAdapterTypes.has("codex")) {
-    await registerWorker(appContext, buildDefaultCodexWorker(timestamp), adapters.codexAdapter);
-  }
+  // codex 暂时不种默认 worker —— 留给用户在 UI 上演示 "Add Worker" 动作（POST /workers/register 路径会真正
+  // 绑定 codexAdapter 给新 worker，绿灯亮起）。要恢复默认，把下方代码取消注释即可。
+  // if (!seenAdapterTypes.has("codex")) {
+  //   await registerWorker(appContext, buildDefaultCodexWorker(timestamp), adapters.codexAdapter);
+  // }
 }
 
 async function main(): Promise<void> {

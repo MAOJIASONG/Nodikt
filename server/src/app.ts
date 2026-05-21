@@ -105,6 +105,15 @@ export async function createApp() {
   const decisionService = new DecisionService(llmClient);
   const memoryManager = new MemoryManager();
   const adapterRegistry = new AdapterRegistry();
+  // 把 adapter 实例的构造提前到 createApiRouter 之前 —— POST /workers/register 路由要按
+  // adapter_type 找到对应 adapter 并 register 给新 worker（这样新 worker 一进系统就能被
+  // ops health check 视为 IDLE，绿灯亮）。之前这些实例在 createApp return 时才创建，
+  // 路由根本拿不到。
+  const codexAdapter = new CodexAdapter();
+  const opencodeAdapter = new OpenCodeAdapter();
+  const claudeCodeAdapter = new ClaudeCodeAdapter();
+  const adapters = { codexAdapter, opencodeAdapter, claudeCodeAdapter };
+
   const server = http.createServer();
   const wss = new WebSocketServer({ noServer: true });
   const wsBroadcaster = new WsBroadcaster(wss, repositories);
@@ -131,7 +140,7 @@ export async function createApp() {
 
   app.use(cors());
   app.use(express.json());
-  app.use("/api", createApiRouter(repositories, eventBus, adapterRegistry));
+  app.use("/api", createApiRouter(repositories, eventBus, adapterRegistry, adapters));
 
   if (hasWebDist) {
     app.use(express.static(webDistDir));
@@ -162,10 +171,6 @@ export async function createApp() {
     });
   });
 
-  const codexAdapter = new CodexAdapter();
-  const opencodeAdapter = new OpenCodeAdapter();
-  const claudeCodeAdapter = new ClaudeCodeAdapter();
-
   return {
     app,
     server,
@@ -174,10 +179,6 @@ export async function createApp() {
     eventBus,
     opsMonitor,
     adapterRegistry,
-    adapters: {
-      codexAdapter,
-      opencodeAdapter,
-      claudeCodeAdapter
-    }
+    adapters
   };
 }
