@@ -824,7 +824,8 @@ small,
   color: var(--muted-2);
 }
 
-.board-delete {
+.board-delete,
+.demand-link-delete {
   width: 24px;
   height: 24px;
   padding: 0;
@@ -834,9 +835,35 @@ small,
 }
 
 .board-delete:hover,
+.demand-link-delete:hover,
 .danger-button:hover {
   border-color: var(--red);
   color: var(--red);
+}
+
+/* sidebar 上的删除按钮——复用 board-delete 视觉，加微调让它在 demand-link flex 里贴右边 */
+.demand-link-delete {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: #000;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  opacity: 0.5;
+}
+
+.demand-link-delete:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.demand-link-delete:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .demand-board-card-add {

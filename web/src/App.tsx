@@ -1639,11 +1639,22 @@ export function App() {
               {demands.map((demand) => (
                 (() => {
                   const indicator = demandProgressIndicator(demand);
+                  const isTerminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(demand.state);
+                  // Sidebar 每条 demand 加 × 按钮（跟 Dashboard board 卡片上的 × 行为一致：调 cancel）。
+                  // 外层必须用 div 而非 button —— HTML 不允许 button 嵌套 button，× 是嵌在条目内的子按钮。
                   return (
-                    <button
+                    <div
                       key={demand.demand_id}
+                      role="button"
+                      tabIndex={0}
                       className={detail?.demand.demand_id === demand.demand_id ? "demand-link active" : "demand-link"}
                       onClick={() => loadDemandDetail(demand.demand_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          void loadDemandDetail(demand.demand_id);
+                        }
+                      }}
                     >
                       <span className="demand-link-copy">
                         <strong>{displayDemandTitle(demand)}</strong>
@@ -1656,7 +1667,21 @@ export function App() {
                       >
                         {indicator.done ? <span className="demand-progress-check">✓</span> : null}
                       </span>
-                    </button>
+                      {!isTerminal && (
+                        <button
+                          type="button"
+                          className="demand-link-delete"
+                          title="结束此 demand"
+                          disabled={controlSubmittingId === demand.demand_id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void controlDemand(demand.demand_id, "cancel", "Cancelled from sidebar");
+                          }}
+                        >
+                          {controlSubmittingId === demand.demand_id ? "…" : "×"}
+                        </button>
+                      )}
+                    </div>
                   );
                 })()
               ))}
