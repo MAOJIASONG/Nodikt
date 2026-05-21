@@ -345,6 +345,8 @@ export function App() {
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState("");
+  // Workspace Grants 输入框的临时值（添加按钮按下时取这个并清空）
+  const [newGrantInput, setNewGrantInput] = useState("");
   const [workerSubmitting, setWorkerSubmitting] = useState(false);
   const boardCardRefs = useRef<Record<string, HTMLElement | null>>({});
   const previousBoardRects = useRef<Map<string, DOMRect>>(new Map());
@@ -1388,6 +1390,40 @@ export function App() {
       ...current,
       workspace_root: value
     }));
+    setSettingsDirty(true);
+    setSettingsStatus("");
+  }
+
+  // Workspace Grants 管理：永久授权清单。下面这些路径让 worker 免询问直接读写；
+  // 增删后跟 LLM 配置一起在点 Save Settings 时落盘。
+  function addWorkspaceGrant(rawPath: string) {
+    const path = rawPath.trim().replace(/\/+$/, "");
+    if (!path || !path.startsWith("/")) {
+      window.alert("请输入以 / 开头的绝对路径");
+      return;
+    }
+    setSettingsDraft((current) => {
+      const existing = Array.isArray(current.workspace_grants) ? current.workspace_grants : [];
+      if (existing.some((g) => g.path === path)) {
+        return current; // 已存在不重复加
+      }
+      return {
+        ...current,
+        workspace_grants: [...existing, { path, granted_at: new Date().toISOString() }]
+      };
+    });
+    setSettingsDirty(true);
+    setSettingsStatus("");
+  }
+
+  function removeWorkspaceGrant(path: string) {
+    setSettingsDraft((current) => {
+      const existing = Array.isArray(current.workspace_grants) ? current.workspace_grants : [];
+      return {
+        ...current,
+        workspace_grants: existing.filter((g) => g.path !== path)
+      };
+    });
     setSettingsDirty(true);
     setSettingsStatus("");
   }
@@ -2954,6 +2990,60 @@ export function App() {
                   onChange={(event) => updateWorkspaceRoot(event.target.value)}
                 />
               </label>
+
+              <section className="workspace-grants-section">
+                <div className="workspace-grants-head">
+                  <h3>授权目录</h3>
+                  <small>除主工作目录外，worker 还能读写的路径。Demand 指定路径若在此清单或当前 demand 临时授权中，则免询问直接放行；否则弹窗请求授权。</small>
+                </div>
+                <div className="workspace-grants-list">
+                  {((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).length === 0 ? (
+                    <p className="workspace-grants-empty">还没有授权目录。提需求时若涉及外部路径会自动弹出授权请求；也可以在下方手动添加。</p>
+                  ) : (
+                    ((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).map((grant) => (
+                      <div key={grant.path} className="workspace-grant-row">
+                        <code>{grant.path}</code>
+                        <small className="workspace-grant-meta">
+                          {grant.granted_at ? `授权于 ${formatRelativeShort(grant.granted_at, Date.now())}` : ""}
+                        </small>
+                        <button
+                          type="button"
+                          className="workspace-grant-remove"
+                          title="移除授权"
+                          onClick={() => removeWorkspaceGrant(grant.path)}
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="workspace-grants-add">
+                  <input
+                    type="text"
+                    placeholder="/path/to/extra/directory"
+                    value={newGrantInput}
+                    onChange={(event) => setNewGrantInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && newGrantInput.trim()) {
+                        addWorkspaceGrant(newGrantInput);
+                        setNewGrantInput("");
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={!newGrantInput.trim()}
+                    onClick={() => {
+                      addWorkspaceGrant(newGrantInput);
+                      setNewGrantInput("");
+                    }}
+                  >
+                    + 添加
+                  </button>
+                </div>
+              </section>
 
               <div className="settings-grid">
                 {(Object.keys(settingsDraft.models) as Array<keyof Settings["models"]>).map((role) => {

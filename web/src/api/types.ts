@@ -243,6 +243,12 @@ export type Settings = {
     ops_backup: ModelConfig;
   };
   workspace_root: string;
+  /**
+   * 永久授权 worker 可访问的额外路径清单。worker 跑任务时，如果 demand 想写到 workspace_root
+   * 之外的目录，且目录已在这个清单或当前 demand 的 metadata.workspace_grants 里，就免询问直接放行；
+   * 否则弹 PATH_GRANT_REQUIRED 决策卡问用户。
+   */
+  workspace_grants?: Array<{ path: string; granted_at: string }> | null;
   runtime: {
     heartbeat_interval_seconds: number;
     execution_timeout_seconds: number;

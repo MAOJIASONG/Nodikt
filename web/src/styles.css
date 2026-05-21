@@ -536,6 +536,110 @@ small,
   gap: 10px;
 }
 
+/* ---------- Workspace Grants 管理（Settings 页面） ----------------------- */
+
+.workspace-grants-section {
+  margin: 18px 0 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.workspace-grants-head h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
+
+.workspace-grants-head small {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workspace-grants-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workspace-grants-empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--muted-2);
+  font-size: 12px;
+  border: 1px dashed rgba(120, 120, 120, 0.3);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.workspace-grant-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(80, 80, 80, 0.35);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.workspace-grant-row code {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  color: #cfd8e3;
+  word-break: break-all;
+  background: transparent;
+  padding: 0;
+}
+
+.workspace-grant-meta {
+  color: var(--muted-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.workspace-grant-remove {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.55;
+  font-size: 13px;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.workspace-grant-remove:hover {
+  opacity: 1;
+  border-color: rgba(239, 90, 90, 0.6);
+  background: rgba(239, 90, 90, 0.08);
+}
+
+.workspace-grants-add {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-grants-add input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+}
+
+.workspace-grants-add input:focus {
+  outline: none;
+  border-color: rgba(74, 144, 226, 0.5);
+}
+
 /* worker 卡片整张可点击进入详情 */
 .worker-tile-clickable {
   cursor: pointer;
