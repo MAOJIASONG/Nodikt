@@ -20,10 +20,12 @@
  */
 import {
   createEvent,
+  DemandState,
   EventType,
   Execution,
   ExecutionState,
   Settings,
+  SubgoalState,
   nowIso
 } from "../../domain/index.js";
 import { EventBus } from "../scheduler/event_bus/eventBus.js";
@@ -36,9 +38,15 @@ const logger = createLogger("ops_monitor");
 
 type TimeoutReason = "heartbeat_missing" | "execution_budget_exceeded" | "wall_clock_timeout";
 
+// 卡死 demand 巡检的几个安全阈值。提取出来集中调，便于运维理解和回归。
+const STUCK_DEMAND_QUIET_MS = 60_000;        // demand updated_at 距今 > 60s 才视作"卡死"，避免误抓正在推进的事件链
+const STUCK_DEMAND_COOLDOWN_MS = 300_000;    // 同一 demand 自愈触发后 5 分钟内不再触发，避免死循环放大问题
+const OPS_COLD_START_GRACE_MS = 30_000;      // server 启动后 30s 内不做卡死判定（数据加载 / adapter 注册可能未稳）
+
 export class OpsMonitor {
   private readonly emittedIncidentAt = new Map<string, number>();
   private readonly lastHealthCheckAt = new Map<string, number>();
+  private readonly serviceStartedAt = Date.now();
 
   constructor(
     private readonly repositories: RepositoryBundle,
@@ -63,10 +71,99 @@ export class OpsMonitor {
         const settings = await this.repositories.loadSettings();
         await this.checkWorkerHealth(eventBus, settings);
         await this.checkExecutions(eventBus, settings);
+        await this.checkStuckDemands(eventBus);
       } catch (error) {
         logger.error({ err: error }, "Ops monitor tick failed");
       }
     }, 2000);
+  }
+
+  /**
+   * 函数作用：扫描所有 ACTIVE demand，识别"事件孤儿 / 状态机停滞"，自动 publish REPLAN_REQUESTED 把它们重新激活。
+   *
+   * 触发场景（用户测试时遇到的真实案例）：
+   * EventBus.publish 先把事件持久化到 events.json，再调 handler。两步之间没有事务，
+   * 任何 server 进程在这中间被 kill / 重启都会导致那条事件成为"孤儿"。重启后没有事件回放机制，
+   * demand 就永远卡在某个 ACTIVE-but-idle 状态。
+   *
+   * 卡死判定（要全部满足）：
+   *   1. demand.state === ACTIVE
+   *   2. 不在等用户输入（waiting_on === null）
+   *   3. 没有活跃决策（active_decision_id === null）
+   *   4. 没有 RUNNING / QUEUED / WAITING_RESULT / VERIFYING 状态的 execution
+   *   5. 没有 READY / DISPATCHED / EXECUTING / VERIFYING 状态的 subgoal（如果有 READY，正常调度器会推进，不该兜底）
+   *   6. demand.updated_at 距今 > STUCK_DEMAND_QUIET_MS（避免误抓正在快速推进的链路）
+   *
+   * 自愈动作：publish REPLAN_REQUESTED(reason="resume")，由 planner 决定下一步。
+   * 不直接改 subgoal / demand 状态 —— 把"决定"交给 planner 更安全。
+   *
+   * 安全门：
+   *   - server 启动后 OPS_COLD_START_GRACE_MS 内不动手（数据加载 / adapter 注册可能未稳）
+   *   - 每个 demand 触发自愈后 STUCK_DEMAND_COOLDOWN_MS 内不再触发（publishOnce 提供）
+   */
+  private async checkStuckDemands(eventBus: EventBus): Promise<void> {
+    if (Date.now() - this.serviceStartedAt < OPS_COLD_START_GRACE_MS) {
+      return;
+    }
+
+    const demands = await this.repositories.demands.list();
+    const candidates = demands.filter((demand) => {
+      if (demand.state !== DemandState.ACTIVE) return false;
+      if (demand.active_decision_id) return false;
+      const runtimeSession = demand.metadata?.runtime_session as { waiting_on?: string | null } | undefined;
+      if (runtimeSession?.waiting_on) return false;
+      const updatedAt = new Date(demand.updated_at).getTime();
+      if (!Number.isFinite(updatedAt)) return false;
+      if (Date.now() - updatedAt < STUCK_DEMAND_QUIET_MS) return false;
+      return true;
+    });
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const allExecutions = await this.repositories.executions.list();
+    const allSubgoals = await this.repositories.subgoals.list();
+
+    const liveExecutionStates = new Set<ExecutionState>([
+      ExecutionState.QUEUED,
+      ExecutionState.RUNNING,
+      ExecutionState.WAITING_RESULT,
+      ExecutionState.VERIFYING
+    ]);
+    const liveSubgoalStates = new Set<SubgoalState>([
+      SubgoalState.READY,
+      SubgoalState.DISPATCHED,
+      SubgoalState.EXECUTING,
+      SubgoalState.VERIFYING
+    ]);
+
+    for (const demand of candidates) {
+      const hasLiveExecution = allExecutions.some(
+        (exec) => exec.demand_id === demand.demand_id && liveExecutionStates.has(exec.state)
+      );
+      if (hasLiveExecution) continue;
+      const hasLiveSubgoal = allSubgoals.some(
+        (sg) => sg.demand_id === demand.demand_id && liveSubgoalStates.has(sg.state)
+      );
+      if (hasLiveSubgoal) continue;
+
+      logger.warn({
+        demandId: demand.demand_id,
+        demandTitle: demand.title,
+        updatedAt: demand.updated_at,
+        idleSeconds: Math.floor((Date.now() - new Date(demand.updated_at).getTime()) / 1000)
+      }, "检测到卡死 demand —— 自愈触发 REPLAN_REQUESTED(reason=resume)");
+
+      await this.publishOnce(
+        eventBus,
+        `stuck-demand:${demand.demand_id}`,
+        STUCK_DEMAND_COOLDOWN_MS,
+        EventType.REPLAN_REQUESTED,
+        { reason: "resume" },
+        { demand_id: demand.demand_id }
+      );
+    }
   }
 
   private async checkWorkerHealth(eventBus: EventBus, settings: Settings): Promise<void> {
