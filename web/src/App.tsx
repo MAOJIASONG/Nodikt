@@ -1276,10 +1276,15 @@ export function App() {
   }
 
   function openCreateDemandPanel() {
-    // 先把当前的 activeDemandId 拍快照 —— invalidateDemandView 会清掉它，
-    // 但关闭弹窗时要靠这个快照恢复原详情页（review 反馈：点 + 进创建，关闭后必须回原 demand）。
+    // 记住当前在哪个 demand 详情（如果有），关闭弹窗时要回到这个 demand 而不是 board。
     previousActiveDemandIdRef.current = activeDemandId;
-    invalidateDemandView({ resetComposer: true });
+    // 关键：不调 invalidateDemandView 整段。如果清了 activeDemandId + detail，关闭弹窗时
+    // 就得重 fetch 一次 demand 详情，用户感觉是"页面刷新了一遍"。
+    // 这里只重置和创建新 demand 直接相关的状态（composer 输入 + create-session 防串号），
+    // detail / activeDemandId / conversation 都原样保留，关闭弹窗直接零成本回切。
+    createSessionRef.current += 1;
+    setCreateSubmitting(false);
+    setNewDemand("");
     setTab("Dashboard");
     setDashboardView("create");
   }
@@ -1293,21 +1298,17 @@ export function App() {
 
   /**
    * 关闭 Create Demand 弹窗的"软关闭"行为 —— 从哪来回哪去：
-   * - 入弹窗前如果在某 demand 详情页，关闭就用快照恢复 activeDemandId + 重新加载 detail
-   *   → 视图回到那个 demand 详情，不丢上下文
-   * - 入弹窗前在 board，关闭就回 board
-   * 实现关键：openCreateDemandPanel 会把 activeDemandId 写进 previousActiveDemandIdRef，
-   * 因为 invalidateDemandView 会把 activeDemandId 自己清掉，这里不能直接依赖它。
+   * - 入弹窗前如果在某 demand 详情页（previousActiveDemandIdRef 有值）→ 仅切回 detail 视图。
+   *   activeDemandId / detail 都没被 invalidate 过，内存里仍是原来的 demand，UI 秒回，
+   *   不会触发 detail-loading 骨架"刷新一遍"。
+   * - 入弹窗前在 board → 回 board。
    */
   function closeCreateModal() {
     setSelectedSubgoalDialog(null);
     const prevId = previousActiveDemandIdRef.current;
     previousActiveDemandIdRef.current = null;
     if (prevId) {
-      setActiveDemandId(prevId);
       setDashboardView("detail");
-      // detail 数据已经被 invalidateDemandView 清掉，回详情前要触发一次重新加载
-      void loadDemandDetail(prevId);
     } else {
       setDashboardView("board");
     }
