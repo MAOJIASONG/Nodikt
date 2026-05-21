@@ -1291,6 +1291,30 @@ export function App() {
     setDashboardView("create");
   }
 
+  /**
+   * 永久删除 demand（连带它的 subgoals / executions / decisions / memory / events 一起清）。
+   * 用于 sidebar × 按钮：用户的本意是"清理掉这条历史记录"，不是把进行中的任务标 CANCELLED。
+   * 后端 DELETE /api/demands/:id 已经实现连级删除。
+   */
+  async function deleteDemand(demandId: string, displayName: string) {
+    if (!window.confirm(`永久删除 demand "${displayName}"？\n（同时清除它的所有 subgoal / execution / decision / memory / events 记录，不可恢复）`)) {
+      return;
+    }
+    setControlSubmittingId(demandId);
+    try {
+      await apiRequest<void>(`/demands/${demandId}`, { method: "DELETE" });
+      setDemands((current) => current.filter((d) => d.demand_id !== demandId));
+      // 如果当前正在看的就是这个 demand，回 board
+      if (activeDemandId === demandId) {
+        returnToBoard();
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setControlSubmittingId(null);
+    }
+  }
+
   function returnToBoard() {
     invalidateDemandView();
     previousActiveDemandIdRef.current = null;
@@ -1639,9 +1663,10 @@ export function App() {
               {demands.map((demand) => (
                 (() => {
                   const indicator = demandProgressIndicator(demand);
-                  const isTerminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(demand.state);
-                  // Sidebar 每条 demand 加 × 按钮（跟 Dashboard board 卡片上的 × 行为一致：调 cancel）。
-                  // 外层必须用 div 而非 button —— HTML 不允许 button 嵌套 button，× 是嵌在条目内的子按钮。
+                  // Sidebar 每条 demand 永远显示 × ——包括 COMPLETED/FAILED/CANCELLED，
+                  // 因为用户原话"点击就是删除 demand"，恰恰最想清理的是这些历史 demand。
+                  // 点击调 DELETE /demands/:id 永久删除（含连级清 subgoals/executions/...）。
+                  // 外层用 div 而非 button —— HTML 不允许 button 嵌 button。
                   return (
                     <div
                       key={demand.demand_id}
@@ -1667,20 +1692,18 @@ export function App() {
                       >
                         {indicator.done ? <span className="demand-progress-check">✓</span> : null}
                       </span>
-                      {!isTerminal && (
-                        <button
-                          type="button"
-                          className="demand-link-delete"
-                          title="结束此 demand"
-                          disabled={controlSubmittingId === demand.demand_id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void controlDemand(demand.demand_id, "cancel", "Cancelled from sidebar");
-                          }}
-                        >
-                          {controlSubmittingId === demand.demand_id ? "…" : "×"}
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="demand-link-delete"
+                        title="删除此 demand"
+                        disabled={controlSubmittingId === demand.demand_id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteDemand(demand.demand_id, displayDemandTitle(demand));
+                        }}
+                      >
+                        {controlSubmittingId === demand.demand_id ? "…" : "×"}
+                      </button>
                     </div>
                   );
                 })()
