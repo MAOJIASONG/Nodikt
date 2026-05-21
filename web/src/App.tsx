@@ -1733,11 +1733,17 @@ export function App() {
 	                            <button
 	                              type="button"
 	                              className="board-delete"
-	                              title="Cancel demand"
+	                              title="删除此 demand"
 	                              disabled={controlSubmittingId === demand.demand_id}
-	                              onClick={() => {
-	                                setBoardDismissingId(demand.demand_id);
-	                                void controlDemand(demand.demand_id, "cancel", "Cancelled from dashboard board");
+	                              onClick={(event) => {
+	                                event.stopPropagation();
+	                                // Dashboard board 上的 × 改成跟 sidebar 一致的真删除（DELETE /demands/:id）。
+	                                // 之前是 controlDemand("cancel")，把 demand 标 CANCELLED 但保留在列表里 ——
+	                                // 用户反馈两边应统一为"删除"语义，CANCELLED 历史也想能清掉。
+	                                // 不再设 dismissing 动画 —— deleteDemand 内的 confirm 会先弹出，
+	                                // 用户取消时 dismissing class 会让卡片误带过渡动画状态；
+	                                // 现在直接靠 deleteDemand 的 setDemands 自然移除节点。
+	                                void deleteDemand(demand.demand_id, displayDemandTitle(demand));
 	                              }}
 	                            >
 	                              {controlSubmittingId === demand.demand_id ? "…" : "×"}
