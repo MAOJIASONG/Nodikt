@@ -391,8 +391,8 @@ export function createApiRouter(
     }
   });
 
-  // PATCH /workers/:id —— 仅允许改 name / max_concurrency / capabilities，
-  // adapter_type / config 不允许 hot-swap（涉及 adapter 重新 register）。
+  // PATCH /workers/:id —— 可编辑 name / max_concurrency / capabilities / runtime_type /
+  // config.workspace_root / config.endpoint。adapter_type 不允许 hot-swap（涉及 adapter 重新 register）。
   router.patch("/workers/:id", async (req, res, next) => {
     try {
       const existing = await repositories.workers.getById(req.params.id);
@@ -400,7 +400,7 @@ export function createApiRouter(
         res.status(404).json({ error: "Worker not found" });
         return;
       }
-      const patched = { ...existing };
+      const patched = { ...existing, config: { ...(existing.config ?? { workspace_root: "" }) } };
       if (typeof req.body.name === "string" && req.body.name.trim().length > 0) {
         patched.name = req.body.name.trim();
       }
@@ -412,6 +412,19 @@ export function createApiRouter(
       }
       if (Array.isArray(req.body.capabilities)) {
         patched.capabilities = req.body.capabilities.map(String);
+      }
+      if (typeof req.body.runtime_type === "string") {
+        const rt = req.body.runtime_type;
+        if (rt === "local_command" || rt === "http" || rt === "websocket") {
+          patched.runtime_type = rt;
+        }
+      }
+      if (typeof req.body.workspace_root === "string" && req.body.workspace_root.trim().length > 0) {
+        patched.config.workspace_root = req.body.workspace_root.trim();
+      }
+      if (typeof req.body.endpoint === "string") {
+        const endpoint = req.body.endpoint.trim();
+        patched.config.endpoint = endpoint.length > 0 ? endpoint : undefined;
       }
       patched.updated_at = nowIso();
       await repositories.workers.upsert(patched);

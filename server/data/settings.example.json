@@ -6,29 +6,25 @@
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
       "base_url": "https://xxxx/v1",
-      "api_key": "",
-      "enabled": true
+      "api_key": ""
     },
     "planner": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
       "base_url": "https://xxxx/v1",
-      "api_key": "",
-      "enabled": true
+      "api_key": ""
     },
     "verifier": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
       "base_url": "https://xxxx/v1",
-      "api_key": "",
-      "enabled": true
+      "api_key": ""
     },
     "ops_backup": {
       "provider": "openai-compatible",
       "model": "MiniMaxAI/MiniMax-M2.5",
       "base_url": "https://xxxx/v1",
-      "api_key": "",
-      "enabled": true
+      "api_key": ""
     }
   },
   "workspace_root": "xxx/workspace",

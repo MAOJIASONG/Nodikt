@@ -1,8 +1,11 @@
 import type { CSSProperties } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { apiRequest } from "./api/client";
 import { createNodiktSocket } from "./api/socket";
+import { useT } from "./i18n/context";
+import type { Language } from "./i18n/messages";
 import type {
   AdapterType,
   ConversationMessage,
@@ -21,6 +24,8 @@ import type {
   WorkerTile
 } from "./api/types";
 
+type TFn = (key: string, vars?: Record<string, string | number>) => string;
+
 type WorkerDraft = {
   name: string;
   adapter_type: AdapterType;
@@ -37,10 +42,10 @@ const EMPTY_SETTINGS: Settings = {
   version: "v1",
   updated_at: "",
   models: {
-    primary: { provider: "", model: "", base_url: "", api_key: "", enabled: false },
-    planner: { provider: "", model: "", base_url: "", api_key: "", enabled: false },
-    verifier: { provider: "", model: "", base_url: "", api_key: "", enabled: false },
-    ops_backup: { provider: "", model: "", base_url: "", api_key: "", enabled: false }
+    primary: { provider: "", model: "", base_url: "", api_key: "" },
+    planner: { provider: "", model: "", base_url: "", api_key: "" },
+    verifier: { provider: "", model: "", base_url: "", api_key: "" },
+    ops_backup: { provider: "", model: "", base_url: "", api_key: "" }
   },
   workspace_root: "",
   runtime: {
@@ -90,30 +95,30 @@ function useTickingClock(enabled: boolean, intervalMs = 1000): number {
   return now;
 }
 
-function formatElapsedShort(elapsedMs: number): string {
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return "刚开始";
+function formatElapsedShort(elapsedMs: number, t: TFn): string {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return t("time.just_started");
   const sec = Math.floor(elapsedMs / 1000);
-  if (sec < 60) return `${sec} 秒`;
+  if (sec < 60) return t("time.seconds", { n: sec });
   const min = Math.floor(sec / 60);
   const rem = sec % 60;
-  if (min < 60) return `${min} 分 ${rem.toString().padStart(2, "0")} 秒`;
+  if (min < 60) return t("time.minutes_seconds", { m: min, s: rem.toString().padStart(2, "0") });
   const hr = Math.floor(min / 60);
-  return `${hr} 时 ${(min % 60).toString().padStart(2, "0")} 分`;
+  return t("time.hours_minutes", { h: hr, m: (min % 60).toString().padStart(2, "0") });
 }
 
-function formatRelativeShort(fromIso: string | null | undefined, nowMs: number): string {
-  if (!fromIso) return "—";
-  const t = new Date(fromIso).getTime();
-  if (!Number.isFinite(t)) return "—";
-  const diff = Math.max(0, nowMs - t);
+function formatRelativeShort(fromIso: string | null | undefined, nowMs: number, t: TFn): string {
+  if (!fromIso) return t("common.dash");
+  const time = new Date(fromIso).getTime();
+  if (!Number.isFinite(time)) return t("common.dash");
+  const diff = Math.max(0, nowMs - time);
   const sec = Math.floor(diff / 1000);
-  if (sec < 5) return "刚刚";
-  if (sec < 60) return `${sec} 秒前`;
+  if (sec < 5) return t("time.just_now");
+  if (sec < 60) return t("time.seconds_ago", { n: sec });
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} 分钟前`;
+  if (min < 60) return t("time.minutes_ago", { n: min });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  return `${Math.floor(hr / 24)} 天前`;
+  if (hr < 24) return t("time.hours_ago", { n: hr });
+  return t("time.days_ago", { n: Math.floor(hr / 24) });
 }
 
 /**
@@ -121,100 +126,100 @@ function formatRelativeShort(fromIso: string | null | undefined, nowMs: number):
  * 返回 { label, tone }：label 是要给客户看的中文句子，tone 用于决定卡片样式色。
  * 缺省 fallback 是原 event_type 字符串 + neutral —— 避免 enum 新增时前端崩。
  */
-function humanizeEvent(event: DemandEvent): { label: string; tone: "neutral" | "info" | "success" | "warning" | "danger" } {
+function humanizeEvent(event: DemandEvent, t: TFn): { label: string; tone: "neutral" | "info" | "success" | "warning" | "danger" } {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   switch (event.event_type) {
     case "USER_INPUT_RECEIVED": {
       const kind = typeof payload.input_kind === "string" ? payload.input_kind : "";
-      if (kind === "recon_findings") return { label: "已收到调研结果，继续推进澄清", tone: "info" };
-      if (kind === "clarification_reply") return { label: "已收到你的澄清回复", tone: "info" };
-      return { label: "已收到你的需求输入", tone: "info" };
+      if (kind === "recon_findings") return { label: t("event.user_input.recon"), tone: "info" };
+      if (kind === "clarification_reply") return { label: t("event.user_input.clarify_reply"), tone: "info" };
+      return { label: t("event.user_input.demand"), tone: "info" };
     }
     case "DEMAND_CREATED":
-      return { label: "已创建需求", tone: "info" };
+      return { label: t("event.demand_created"), tone: "info" };
     case "DEMAND_CLARIFICATION_COMPLETED":
-      return { label: "需求澄清完成，进入规划阶段", tone: "success" };
+      return { label: t("event.demand_clarified"), tone: "success" };
     case "PLAN_GENERATED":
-      return { label: "已生成执行计划", tone: "success" };
+      return { label: t("event.plan_generated"), tone: "success" };
     case "SUBGOAL_CREATED":
-      return { label: "已创建子目标", tone: "info" };
+      return { label: t("event.subgoal_created"), tone: "info" };
     case "SUBGOAL_MARKED_READY":
-      return { label: "子目标已就绪，准备派发", tone: "info" };
+      return { label: t("event.subgoal_ready"), tone: "info" };
     case "EXECUTION_CREATED":
-      return { label: "已为子目标创建执行", tone: "info" };
+      return { label: t("event.execution_created"), tone: "info" };
     case "EXECUTION_DISPATCHED":
-      return { label: "已派发到 worker", tone: "info" };
+      return { label: t("event.execution_dispatched"), tone: "info" };
     case "WORKER_RESULT_RECEIVED": {
       const wr = payload.worker_result as { worker_status?: string | null } | undefined;
       const status = wr?.worker_status ?? "";
-      if (status === "DONE") return { label: "Worker 已完成", tone: "success" };
-      if (status === "FAILED") return { label: "Worker 报告失败", tone: "danger" };
-      if (status === "NEED_HELP" || status === "BLOCKED") return { label: "Worker 需要进一步指示", tone: "warning" };
-      return { label: "已收到 worker 结果", tone: "info" };
+      if (status === "DONE") return { label: t("event.worker_done"), tone: "success" };
+      if (status === "FAILED") return { label: t("event.worker_failed"), tone: "danger" };
+      if (status === "NEED_HELP" || status === "BLOCKED") return { label: t("event.worker_blocked"), tone: "warning" };
+      return { label: t("event.worker_result"), tone: "info" };
     }
     case "VERIFICATION_COMPLETED": {
       const vr = payload.verification_result as { verified_status?: string } | undefined;
       const status = vr?.verified_status ?? typeof payload.verification_status === "string" ? payload.verification_status : "";
-      if (status === "VERIFIED_DONE") return { label: "验证通过", tone: "success" };
-      if (status === "PARTIAL") return { label: "部分验证通过，继续推进", tone: "info" };
-      if (status === "FAILED") return { label: "验证未通过", tone: "danger" };
-      if (status === "UNVERIFIABLE") return { label: "无法验证结果", tone: "warning" };
-      return { label: "验证已完成", tone: "info" };
+      if (status === "VERIFIED_DONE") return { label: t("event.verified_done"), tone: "success" };
+      if (status === "PARTIAL") return { label: t("event.verified_partial"), tone: "info" };
+      if (status === "FAILED") return { label: t("event.verified_failed"), tone: "danger" };
+      if (status === "UNVERIFIABLE") return { label: t("event.unverifiable"), tone: "warning" };
+      return { label: t("event.verified_completed"), tone: "info" };
     }
     case "RECONCILIATION_COMPLETED": {
       const replan = Boolean(payload.replan_requested);
       const mission = Boolean(payload.mission_completed);
-      if (mission) return { label: "整体任务完成", tone: "success" };
-      if (replan) return { label: "完成结果归并，准备重新规划", tone: "info" };
-      return { label: "已归并执行结果", tone: "info" };
+      if (mission) return { label: t("event.mission_complete"), tone: "success" };
+      if (replan) return { label: t("event.reconcile_replan"), tone: "info" };
+      return { label: t("event.reconcile_done"), tone: "info" };
     }
     case "SUBGOAL_RETRY_REQUESTED":
-      return { label: "正在自动重试此子目标", tone: "warning" };
+      return { label: t("event.subgoal_retry"), tone: "warning" };
     case "DECISION_REQUEST_CREATED": {
       const dr = payload.decision_request as { reason_code?: string } | undefined;
       const reason = dr?.reason_code ?? "";
-      if (reason === "PLAN_REVIEW") return { label: "等待你审核新的执行计划", tone: "warning" };
-      if (reason === "PATH_GRANT_REQUIRED") return { label: "等待你授权输出目录", tone: "warning" };
-      if (reason === "OPS_ALERT") return { label: "运维异常，等待你处理", tone: "danger" };
-      if (reason === "UNVERIFIABLE_RESULT") return { label: "结果无法验证，等待你裁决", tone: "warning" };
-      if (reason === "BLOCKED") return { label: "执行受阻，等待你裁决", tone: "warning" };
-      return { label: "需要你做一个决策", tone: "warning" };
+      if (reason === "PLAN_REVIEW") return { label: t("event.decision.plan_review"), tone: "warning" };
+      if (reason === "PATH_GRANT_REQUIRED") return { label: t("event.decision.path_grant"), tone: "warning" };
+      if (reason === "OPS_ALERT") return { label: t("event.decision.ops_alert"), tone: "danger" };
+      if (reason === "UNVERIFIABLE_RESULT") return { label: t("event.decision.unverifiable"), tone: "warning" };
+      if (reason === "BLOCKED") return { label: t("event.decision.blocked"), tone: "warning" };
+      return { label: t("event.decision.generic"), tone: "warning" };
     }
     case "DECISION_RESPONSE_RECEIVED": {
       const dr = payload.decision_response as { action?: string } | undefined;
       const action = dr?.action ?? "";
-      if (action === "Approve") return { label: "你已批准，继续推进", tone: "success" };
-      if (action === "Reject") return { label: "你已拒绝", tone: "danger" };
-      if (action === "ProvideInfo") return { label: "你已补充信息", tone: "info" };
-      if (action === "CancelDemand") return { label: "已取消此需求", tone: "danger" };
-      return { label: "已收到你的回复", tone: "info" };
+      if (action === "Approve") return { label: t("event.decision_response.approve"), tone: "success" };
+      if (action === "Reject") return { label: t("event.decision_response.reject"), tone: "danger" };
+      if (action === "ProvideInfo") return { label: t("event.decision_response.provide_info"), tone: "info" };
+      if (action === "CancelDemand") return { label: t("event.decision_response.cancel"), tone: "danger" };
+      return { label: t("event.decision_response.received"), tone: "info" };
     }
     case "REPLAN_REQUESTED":
-      return { label: "正在根据反馈调整计划", tone: "info" };
+      return { label: t("event.replan"), tone: "info" };
     case "DEMAND_PAUSED":
-      return { label: "需求已暂停", tone: "warning" };
+      return { label: t("event.paused"), tone: "warning" };
     case "DEMAND_RESUMED":
-      return { label: "需求已恢复", tone: "info" };
+      return { label: t("event.resumed"), tone: "info" };
     case "DEMAND_CANCELLED":
-      return { label: "需求已取消", tone: "danger" };
+      return { label: t("event.cancelled"), tone: "danger" };
     case "EXECUTION_STOP_REQUESTED":
-      return { label: "正在中断当前执行", tone: "warning" };
+      return { label: t("event.exec_stop"), tone: "warning" };
     case "EXECUTION_TIMEOUT_DETECTED":
-      return { label: "执行超时", tone: "warning" };
+      return { label: t("event.exec_timeout"), tone: "warning" };
     case "WORKER_HEALTH_CHECKED": {
       const ok = Boolean(payload.ok);
       return ok
-        ? { label: "Worker 健康检查通过", tone: "neutral" }
-        : { label: "Worker 健康检查失败", tone: "warning" };
+        ? { label: t("event.worker_health_ok"), tone: "neutral" }
+        : { label: t("event.worker_health_fail"), tone: "warning" };
     }
     case "OPS_RECOVERY_ATTEMPTED":
-      return { label: "已尝试自动恢复", tone: "info" };
+      return { label: t("event.ops_recover"), tone: "info" };
     case "OPS_RECOVERY_FAILED":
-      return { label: "自动恢复失败", tone: "danger" };
+      return { label: t("event.ops_recover_failed"), tone: "danger" };
     case "OPS_ALERT":
-      return { label: "运维告警", tone: "warning" };
+      return { label: t("event.ops_alert"), tone: "warning" };
     case "MISSION_COMPLETED":
-      return { label: "整体任务完成", tone: "success" };
+      return { label: t("event.mission_complete"), tone: "success" };
     default:
       return { label: event.event_type, tone: "neutral" };
   }
@@ -250,6 +255,7 @@ function extractToolProgress(execution: Execution): { steps: number; lastAction:
  * 拿不到 execution；这时仍渲染一个 "排队中…" 的占位卡，让用户至少看见这块区域。
  */
 function RunningProgress({ execution }: { execution: Execution | null }) {
+  const { t } = useT();
   const now = useTickingClock(true, 1000);
 
   // execution=null 的早期窗口：subgoal 显示 running 但 execution row 还没出现
@@ -258,11 +264,11 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
       <div className="running-progress running-progress-queued">
         <div className="running-progress-row">
           <span className="running-progress-pulse" aria-hidden="true" />
-          <span className="running-progress-label">排队中…</span>
-          <span className="running-progress-elapsed">worker 即将接管</span>
+          <span className="running-progress-label">{t("progress.queued")}</span>
+          <span className="running-progress-elapsed">{t("progress.queued_handoff")}</span>
         </div>
         <div className="running-progress-meta">
-          <span>等待派发到 worker</span>
+          <span>{t("progress.queued_waiting")}</span>
         </div>
       </div>
     );
@@ -271,7 +277,7 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
   const startedMs = execution.started_at ? new Date(execution.started_at).getTime() : null;
   const elapsed = startedMs ? Math.max(0, now - startedMs) : 0;
   const { steps, lastAction } = extractToolProgress(execution);
-  const heartbeatRelative = formatRelativeShort(execution.last_heartbeat_at, now);
+  const heartbeatRelative = formatRelativeShort(execution.last_heartbeat_at, now, t);
   const heartbeatMs = execution.last_heartbeat_at
     ? Math.max(0, now - new Date(execution.last_heartbeat_at).getTime())
     : null;
@@ -284,11 +290,13 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
   //   stale     —— 心跳 60s+ 没刷，可能卡住（橙色警示）
   const renderState = !startedMs ? "queued" : heartbeatStale ? "stale" : "running";
   const stateLabel = renderState === "queued"
-    ? "排队中…"
+    ? t("progress.queued")
     : renderState === "stale"
-      ? "心跳停滞，可能卡住"
-      : "执行中";
-  const elapsedText = startedMs ? `已运行 ${formatElapsedShort(elapsed)}` : "等待 worker 启动";
+      ? t("progress.stalled")
+      : t("progress.running");
+  const elapsedText = startedMs
+    ? t("progress.elapsed", { duration: formatElapsedShort(elapsed, t) })
+    : t("progress.waiting_start");
 
   return (
     <div className={`running-progress running-progress-${renderState}`}>
@@ -298,15 +306,15 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
         <span className="running-progress-elapsed">{elapsedText}</span>
       </div>
       <div className="running-progress-meta">
-        {steps > 0 ? <span>已完成 {steps} 步</span> : <span>等待 worker 上报第一步</span>}
+        {steps > 0 ? <span>{t("progress.steps_done", { n: steps })}</span> : <span>{t("progress.waiting_first")}</span>}
         <span>·</span>
         <span title={execution.last_heartbeat_at ?? ""}>
-          {execution.last_heartbeat_at ? `${heartbeatRelative}活跃` : "尚未心跳"}
+          {execution.last_heartbeat_at ? t("progress.active_at", { ago: heartbeatRelative }) : t("progress.no_heartbeat")}
         </span>
       </div>
       {lastAction ? (
         <div className="running-progress-action" title={lastAction}>
-          正在 {lastAction}
+          {t("progress.in_progress", { action: lastAction })}
         </div>
       ) : null}
     </div>
@@ -314,13 +322,26 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
 }
 
 export function App() {
+  const { t, language, setLanguage } = useT();
   const [tab, setTab] = useState<"Dashboard" | "Workers" | "Settings">("Dashboard");
+  const [settingsTab, setSettingsTab] = useState<"general" | "brain">("general");
   const [dashboardView, setDashboardView] = useState<"board" | "detail" | "create">("board");
   const [demands, setDemands] = useState<Demand[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [showWorkerCreateModal, setShowWorkerCreateModal] = useState(false);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const [workerDraft, setWorkerDraft] = useState<WorkerDraft>(DEFAULT_WORKER_DRAFT);
+  // Worker Detail 编辑表单的本地草稿：打开弹窗时从 worker 拷一份进来，Save 之前都不会写回 workers 列表。
+  // capabilities 在 UI 上用 csv 字符串编辑，提交时再 parseCsv 一下。
+  const [workerEditDraft, setWorkerEditDraft] = useState<{
+    name: string;
+    runtime_type: RuntimeType;
+    workspace_root: string;
+    capabilities: string;
+    max_concurrency: number;
+    endpoint: string;
+  } | null>(null);
+  const [workerEditSubmitting, setWorkerEditSubmitting] = useState(false);
   const [detail, setDetail] = useState<DemandDetail | null>(null);
   const [activeDemandId, setActiveDemandId] = useState<string | null>(null);
   const [newDemand, setNewDemand] = useState("");
@@ -383,24 +404,24 @@ export function App() {
         return {
           demand,
           kind: "decision",
-          label: "Decision",
-          hint: "Awaiting your decision"
+          label: t("action_required.label.decision"),
+          hint: t("action_required.hint.decision")
         };
       }
       if (demand.state === "BLOCKED") {
         return {
           demand,
           kind: "blocked",
-          label: "Blocked",
-          hint: "Execution is blocked, intervention required"
+          label: t("action_required.label.blocked"),
+          hint: t("action_required.hint.blocked")
         };
       }
       if (demand.state === "PENDING_ALIGNMENT" || demand.metadata?.clarification_question) {
         return {
           demand,
           kind: "alignment",
-          label: "Clarify",
-          hint: "Clarification reply needed"
+          label: t("action_required.label.clarify"),
+          hint: t("action_required.hint.clarify")
         };
       }
       return null;
@@ -486,44 +507,17 @@ export function App() {
     return "offline";
   }
 
-  const workerTiles: WorkerTile[] = (() => {
-    const configured = workers.map((worker) => ({
-      key: worker.worker_id,
-      name: worker.name,
-      subtitle: `${worker.adapter_type} / ${worker.runtime_type ?? "local_command"}`,
-      capabilities: worker.capabilities,
-      lamp: workerLamp(worker),
-      status: worker.status,
-      meta: worker.current_execution_ids?.length
-        ? `${worker.current_execution_ids.length} active execution${worker.current_execution_ids.length === 1 ? "" : "s"}`
-        : worker.config?.workspace_root
-    }));
-
-    // 占位卡只保留 Codex 和 Claude Code 两种（review 反馈：只留 claude 和 codex，去掉 OpenClaw）。
-    // 如果用户已经配置了同名 worker，下面的 filter 会自动隐藏占位卡。
-    const placeholders: WorkerTile[] = [
-      {
-        key: "placeholder-claude-code",
-        name: "Claude Code",
-        subtitle: "Not configured",
-        capabilities: ["Code review", "Refactor", "Patch planning"],
-        lamp: "offline"
-      },
-      {
-        key: "placeholder-codex",
-        name: "Codex",
-        subtitle: "Not configured",
-        capabilities: ["Code generation", "Editing", "Command execution"],
-        lamp: "offline"
-      }
-    ];
-
-    const existingNames = new Set(configured.map((item) => item.name.toLowerCase()));
-    return [
-      ...configured,
-      ...placeholders.filter((item) => !existingNames.has(item.name.toLowerCase()))
-    ];
-  })();
+  const workerTiles: WorkerTile[] = workers.map((worker) => ({
+    key: worker.worker_id,
+    name: worker.name,
+    subtitle: `${worker.adapter_type} / ${worker.runtime_type ?? "local_command"}`,
+    capabilities: worker.capabilities,
+    lamp: workerLamp(worker),
+    status: worker.status,
+    meta: worker.current_execution_ids?.length
+      ? `${worker.current_execution_ids.length} active execution${worker.current_execution_ids.length === 1 ? "" : "s"}`
+      : worker.config?.workspace_root
+  }));
 
   function parseCsv(value: string): string[] {
     return value
@@ -593,7 +587,7 @@ export function App() {
       setShowWorkerCreateModal(false);
       await loadDashboard({ silent: true });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to register worker");
+      window.alert(error instanceof Error ? error.message : t("workers.register_failed"));
     } finally {
       setWorkerSubmitting(false);
     }
@@ -604,7 +598,7 @@ export function App() {
    * 工作量小的"编辑"路径，避免做完整 edit 表单。
    */
   async function renameWorker(workerId: string, currentName: string) {
-    const input = window.prompt("修改 worker 名称（不影响 adapter 配置）：", currentName);
+    const input = window.prompt(t("workers.rename_prompt"), currentName);
     if (input === null) return;
     const trimmed = input.trim();
     if (!trimmed || trimmed === currentName) return;
@@ -616,7 +610,74 @@ export function App() {
       });
       setWorkers((current) => current.map((w) => (w.worker_id === workerId ? patched : w)));
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "重命名失败");
+      window.alert(error instanceof Error ? error.message : t("workers.rename_failed"));
+    }
+  }
+
+  /**
+   * 打开 Worker Detail 弹窗：从 worker 拷一份编辑草稿出来。
+   * 用户改字段只动 workerEditDraft；点 Save 才 PATCH 到后端。
+   */
+  function openWorkerDetail(worker: Worker) {
+    setSelectedWorkerId(worker.worker_id);
+    setWorkerEditDraft({
+      name: worker.name,
+      runtime_type: (worker.runtime_type ?? "local_command") as RuntimeType,
+      workspace_root: worker.config?.workspace_root ?? "",
+      capabilities: worker.capabilities.join(", "),
+      max_concurrency: worker.max_concurrency ?? 1,
+      endpoint: worker.config?.endpoint ?? ""
+    });
+  }
+
+  function closeWorkerDetail() {
+    setSelectedWorkerId(null);
+    setWorkerEditDraft(null);
+    setWorkerEditSubmitting(false);
+  }
+
+  function updateWorkerEditDraft<K extends keyof NonNullable<typeof workerEditDraft>>(
+    field: K,
+    value: NonNullable<typeof workerEditDraft>[K]
+  ) {
+    setWorkerEditDraft((current) => (current ? { ...current, [field]: value } : current));
+  }
+
+  /**
+   * PATCH /workers/:id 把编辑后的字段写回后端：
+   *   name / runtime_type / workspace_root / capabilities / max_concurrency / endpoint
+   * adapter_type / command / args 不在 UI 编辑范围（需要 adapter 重新 register，留给重建 worker 走）。
+   */
+  async function saveWorkerEdit() {
+    if (!selectedWorkerId || !workerEditDraft) return;
+    const name = workerEditDraft.name.trim();
+    const workspaceRoot = workerEditDraft.workspace_root.trim();
+    const capabilities = parseCsv(workerEditDraft.capabilities);
+    const maxConcurrency = Math.max(1, Number(workerEditDraft.max_concurrency) || 1);
+    if (!name || !workspaceRoot || capabilities.length === 0) {
+      window.alert(t("workers.register_failed"));
+      return;
+    }
+    setWorkerEditSubmitting(true);
+    try {
+      const patched = await apiRequest<Worker>(`/workers/${selectedWorkerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          runtime_type: workerEditDraft.runtime_type,
+          workspace_root: workspaceRoot,
+          capabilities,
+          max_concurrency: maxConcurrency,
+          endpoint: workerEditDraft.endpoint.trim()
+        })
+      });
+      setWorkers((current) => current.map((w) => (w.worker_id === patched.worker_id ? patched : w)));
+      closeWorkerDetail();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("workers.detail.save_failed"));
+    } finally {
+      setWorkerEditSubmitting(false);
     }
   }
 
@@ -625,12 +686,12 @@ export function App() {
    * 成功后从前端 workers 列表移除即可，下次 ws workers broadcast 会再次校准。
    */
   async function deleteWorker(workerId: string, displayName: string) {
-    if (!window.confirm(`删除 worker "${displayName}"？`)) return;
+    if (!window.confirm(t("workers.delete_confirm", { name: displayName }))) return;
     try {
       await apiRequest<void>(`/workers/${workerId}`, { method: "DELETE" });
       setWorkers((current) => current.filter((w) => w.worker_id !== workerId));
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "删除失败";
+      const msg = error instanceof Error ? error.message : t("workers.delete_failed");
       window.alert(msg);
     }
   }
@@ -752,54 +813,54 @@ export function App() {
 
   function stageLabel(stage: "waiting" | "ready" | "running" | "success" | "failed", decision?: Decision): string {
     if (stage === "ready" && decision?.status === "OPEN") {
-      return "Queued";
+      return t("stage.queued");
     }
     return {
-      waiting: "Waiting",
-      ready: "Ready",
-      running: "Running",
-      success: "Succeeded",
-      failed: "Failed"
+      waiting: t("stage.waiting"),
+      ready: t("stage.ready"),
+      running: t("stage.running"),
+      success: t("stage.success"),
+      failed: t("stage.failed")
     }[stage];
   }
 
   function decisionActionLabel(action: string, reasonCode?: string | null): string {
     if (reasonCode === "PLAN_REVIEW") {
       const planReviewLabels: Record<string, string> = {
-        Approve: "Approve Plan",
-        ProvideInfo: "Send Feedback",
-        Reject: "Reject Plan",
-        CancelDemand: "Cancel Demand",
-        Pause: "Pause",
-        Stop: "Stop"
+        Approve: t("decision_action.approve_plan"),
+        ProvideInfo: t("decision_action.send_feedback"),
+        Reject: t("decision_action.reject_plan"),
+        CancelDemand: t("decision_action.cancel_demand"),
+        Pause: t("decision_action.pause"),
+        Stop: t("decision_action.stop")
       };
       if (planReviewLabels[action]) {
         return planReviewLabels[action];
       }
     }
     return {
-      Approve: "Approve",
-      Reject: "Reject",
-      ProvideInfo: "Reply",
-      Pause: "Pause",
-      Stop: "Stop",
-      CancelDemand: "Cancel Demand"
+      Approve: t("decision_action.approve"),
+      Reject: t("decision_action.reject"),
+      ProvideInfo: t("decision_action.provide_info"),
+      Pause: t("decision_action.pause"),
+      Stop: t("decision_action.stop"),
+      CancelDemand: t("decision_action.cancel_demand")
     }[action] ?? action;
   }
 
   function decisionReasonLabel(reasonCode?: string | null): string {
-    if (!reasonCode) return "DECISION";
+    if (!reasonCode) return t("decision_reason.default");
     const friendly: Record<string, string> = {
-      PLAN_REVIEW: "Plan Review",
-      PATH_GRANT_REQUIRED: "Path Authorization",
-      MISSING_INFO: "Missing Info",
-      MISSING_PERMISSION: "Missing Permission",
-      INSTALL_REQUIRES_REVIEW: "Install Review",
-      PLAN_CONFLICT: "Plan Conflict",
-      UNVERIFIABLE_RESULT: "Unverifiable",
-      HIGH_RISK_ACTION: "High Risk",
-      BLOCKED: "Blocked",
-      OPS_ALERT: "Ops Alert"
+      PLAN_REVIEW: t("decision_reason.plan_review"),
+      PATH_GRANT_REQUIRED: t("decision_reason.path_grant_required"),
+      MISSING_INFO: t("decision_reason.missing_info"),
+      MISSING_PERMISSION: t("decision_reason.missing_permission"),
+      INSTALL_REQUIRES_REVIEW: t("decision_reason.install_requires_review"),
+      PLAN_CONFLICT: t("decision_reason.plan_conflict"),
+      UNVERIFIABLE_RESULT: t("decision_reason.unverifiable_result"),
+      HIGH_RISK_ACTION: t("decision_reason.high_risk_action"),
+      BLOCKED: t("decision_reason.blocked"),
+      OPS_ALERT: t("decision_reason.ops_alert")
     };
     return friendly[reasonCode] ?? reasonCode;
   }
@@ -838,17 +899,17 @@ export function App() {
         }
       };
 
-      pushText("当前情况", parsed.decision_prompt);
-      pushText("解释", parsed.explanation);
-      pushText("原因", parsed.reason);
-      pushText("上下文", parsed.context);
-      pushText("需要你处理", parsed.human_input_required);
-      pushText("为什么需要你介入", parsed.why_human_input_required);
-      pushText("建议", parsed.suggestion);
-      pushText("下一步建议", parsed.next_step);
-      pushList("建议你现在做的事", parsed.suggestions);
-      pushList("建议步骤", parsed.next_steps);
-      pushList("我还需要确认", parsed.questions);
+      pushText(t("decision_section.current"), parsed.decision_prompt);
+      pushText(t("decision_section.explanation"), parsed.explanation);
+      pushText(t("decision_section.reason"), parsed.reason);
+      pushText(t("decision_section.context"), parsed.context);
+      pushText(t("decision_section.need_action"), parsed.human_input_required);
+      pushText(t("decision_section.why_human"), parsed.why_human_input_required);
+      pushText(t("decision_section.suggestion"), parsed.suggestion);
+      pushText(t("decision_section.next_step"), parsed.next_step);
+      pushList(t("decision_section.suggestions"), parsed.suggestions);
+      pushList(t("decision_section.next_steps"), parsed.next_steps);
+      pushList(t("decision_section.questions"), parsed.questions);
 
       return sections.join("\n\n") || prompt;
     } catch {
@@ -866,7 +927,7 @@ export function App() {
       || execution?.compressed_history
       || decision?.prompt
       || workerResult?.suggested_next_step
-      || "No detail was recorded.";
+      || t("demand.no_detail");
   }
 
   function hasInspectableIssue(stage: "waiting" | "ready" | "running" | "success" | "failed", decision?: Decision): boolean {
@@ -982,7 +1043,7 @@ export function App() {
     } catch (error) {
       setDashboardView("create");
       setDetailLoading(false);
-      window.alert(error instanceof Error ? error.message : "Failed to create demand");
+      window.alert(error instanceof Error ? error.message : t("demand.create_failed"));
     } finally {
       if (createSessionId === createSessionRef.current) {
         setCreateSubmitting(false);
@@ -1008,7 +1069,7 @@ export function App() {
         setDashboardView("board");
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to control demand");
+      window.alert(error instanceof Error ? error.message : t("demand.control_failed"));
     } finally {
       setControlSubmittingId(null);
       setBoardDismissingId((current) => (current === demandId ? null : current));
@@ -1028,7 +1089,7 @@ export function App() {
         await loadDemandDetail(demandId);
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to interrupt execution");
+      window.alert(error instanceof Error ? error.message : t("demand.interrupt_failed"));
     } finally {
       setControlSubmittingId(null);
     }
@@ -1063,7 +1124,7 @@ export function App() {
       await loadDemandDetail(detail.demand.demand_id);
     } catch (error) {
       setClarificationReply(replyText);
-      window.alert(error instanceof Error ? error.message : "Failed to send clarification reply");
+      window.alert(error instanceof Error ? error.message : t("demand.reply_failed"));
     } finally {
       setReplySubmitting(false);
       setAssistantTyping(false);
@@ -1082,9 +1143,9 @@ export function App() {
       setSettings(saved);
       setSettingsDraft(saved);
       setSettingsDirty(false);
-      setSettingsStatus("Settings saved");
+      setSettingsStatus(t("settings.saved"));
     } catch (error) {
-      setSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
+      setSettingsStatus(error instanceof Error ? error.message : t("settings.save_failed"));
     } finally {
       setSettingsSaving(false);
     }
@@ -1155,7 +1216,7 @@ export function App() {
       if (triggerReplanTransition) {
         setPlanTransitionMode("idle");
       }
-      window.alert(error instanceof Error ? error.message : "Failed to respond to decision");
+      window.alert(error instanceof Error ? error.message : t("demand.decision_failed"));
     } finally {
       setDecisionSubmitting(null);
     }
@@ -1166,7 +1227,7 @@ export function App() {
       return;
     }
     const note = window.prompt(
-      "用一句话告诉 planner 为什么要重规划（可选，直接回车跳过）",
+      t("demand.replan_prompt"),
       ""
     );
     if (note === null) {
@@ -1195,7 +1256,7 @@ export function App() {
       setPlanTransitionMode("idle");
     } catch (error) {
       setPlanTransitionMode("idle");
-      window.alert(error instanceof Error ? error.message : "Replan 失败");
+      window.alert(error instanceof Error ? error.message : t("demand.replan_failed"));
     } finally {
       setReplanSubmitting(false);
     }
@@ -1213,7 +1274,7 @@ export function App() {
           disabled={submitting}
           onClick={() => void respondToDecision(decision.decision_id, "Approve" as DecisionAction, { remember: false })}
         >
-          {submitting ? "Sending..." : "Approve Once"}
+          {submitting ? t("decision_action.sending") : t("decision_action.approve_once")}
         </button>,
         <button
           key={`${decision.decision_id}-approve-remember`}
@@ -1222,7 +1283,7 @@ export function App() {
           disabled={submitting}
           onClick={() => void respondToDecision(decision.decision_id, "Approve" as DecisionAction, { remember: true })}
         >
-          {submitting ? "Sending..." : "Approve & Remember"}
+          {submitting ? t("decision_action.sending") : t("decision_action.approve_remember")}
         </button>,
         <button
           key={`${decision.decision_id}-reject`}
@@ -1231,7 +1292,7 @@ export function App() {
           disabled={submitting}
           onClick={() => void respondToDecision(decision.decision_id, "Reject" as DecisionAction)}
         >
-          {submitting ? "Sending..." : "Reject"}
+          {submitting ? t("decision_action.sending") : t("decision_action.reject")}
         </button>
         // PATH_GRANT 决策原本有 "Cancel Demand" 按钮（DecisionAction.CANCEL_DEMAND）—— 前端按
         // review #6 要求不再展示。后端 API 仍接受 CancelDemand action，需要时可通过其它途径触发。
@@ -1252,7 +1313,7 @@ export function App() {
           disabled={disabled}
           onClick={() => void respondToDecision(decision.decision_id, action)}
         >
-          {decisionSubmitting === decision.decision_id ? "Sending..." : decisionActionLabel(action, decision.reason_code)}
+          {decisionSubmitting === decision.decision_id ? t("decision_action.sending") : decisionActionLabel(action, decision.reason_code)}
         </button>
       );
     });
@@ -1297,7 +1358,7 @@ export function App() {
    * 后端 DELETE /api/demands/:id 已经实现连级删除。
    */
   async function deleteDemand(demandId: string, displayName: string) {
-    if (!window.confirm(`永久删除 demand "${displayName}"？\n（同时清除它的所有 subgoal / execution / decision / memory / events 记录，不可恢复）`)) {
+    if (!window.confirm(t("demand.delete_confirm", { name: displayName }))) {
       return;
     }
     setControlSubmittingId(demandId);
@@ -1309,7 +1370,7 @@ export function App() {
         returnToBoard();
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "删除失败");
+      window.alert(error instanceof Error ? error.message : t("demand.delete_failed"));
     } finally {
       setControlSubmittingId(null);
     }
@@ -1354,21 +1415,21 @@ export function App() {
     ...conversationPending
   ];
   const globalBusyLabel = replySubmitting
-    ? "LLM replying"
+    ? t("busy.llm_replying")
     : createSubmitting
-      ? "Creating demand"
+      ? t("busy.creating_demand")
       : detailLoading
-        ? "Loading demand"
+        ? t("busy.loading_demand")
         : settingsSaving
-          ? "Saving settings"
+          ? t("busy.saving_settings")
           : decisionSubmitting
-            ? "Submitting decision"
+            ? t("busy.submitting_decision")
             : controlSubmittingId
-              ? "Sending control"
+              ? t("busy.sending_control")
               : workerSubmitting
-                ? "Registering worker"
+                ? t("busy.registering_worker")
                 : dashboardLoading
-                  ? "Syncing"
+                  ? t("busy.syncing")
                   : "";
 
   const alignmentInProgress = Boolean(detail && demandNeedsClarification(detail.demand));
@@ -1423,7 +1484,7 @@ export function App() {
   function addWorkspaceGrant(rawPath: string) {
     const path = rawPath.trim().replace(/\/+$/, "");
     if (!path || !path.startsWith("/")) {
-      window.alert("请输入以 / 开头的绝对路径");
+      window.alert(t("settings.general.grants.invalid"));
       return;
     }
     setSettingsDraft((current) => {
@@ -1582,28 +1643,43 @@ export function App() {
       <div className="aurora-noise" />
       <header className="topbar">
         <div className="topbar-left">
-          <div className="brand">
+          <button
+            type="button"
+            className="brand brand-button"
+            onClick={() => {
+              setTab("Dashboard");
+              returnToBoard();
+              closeWorkerDetail();
+            }}
+            title={t("brand.copy")}
+          >
             <span className="brand-mark" aria-hidden="true" />
             <span className="brand-name">NODIKT</span>
-            <span className="brand-copy">Intent OS v1</span>
-          </div>
+            <span className="brand-copy">{t("brand.copy")}</span>
+          </button>
         </div>
         {globalBusyLabel ? <div className="global-busy">{globalBusyLabel}<span className="typing-dots"><span>.</span><span>.</span><span>.</span></span></div> : null}
         <nav className="tabs">
-          {(["Dashboard", "Workers", "Settings"] as const).map((item) => (
-            <button
-              key={item}
-              className={tab === item ? "tab active" : "tab"}
-              onClick={() => setTab(item)}
-            >
-              {item}
-              {item === "Dashboard" && actionRequiredCount > 0 ? (
-                <span className="tab-action-badge" aria-label={`${actionRequiredCount} actions required`}>
-                  {actionRequiredCount}
-                </span>
-              ) : null}
-            </button>
-          ))}
+          {(["Dashboard", "Workers", "Settings"] as const).map((item) => {
+            const navKey = item === "Dashboard" ? "nav.dashboard" : item === "Workers" ? "nav.workers" : "nav.settings";
+            return (
+              <button
+                key={item}
+                className={tab === item ? "tab active" : "tab"}
+                onClick={() => {
+                  setTab(item);
+                  if (item !== "Workers") closeWorkerDetail();
+                }}
+              >
+                {t(navKey)}
+                {item === "Dashboard" && actionRequiredCount > 0 ? (
+                  <span className="tab-action-badge" aria-label={t("nav.action_badge", { count: actionRequiredCount })}>
+                    {actionRequiredCount}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </nav>
       </header>
 
@@ -1612,9 +1688,9 @@ export function App() {
           <div className="action-required-bar-left">
             <span className="action-required-pulse" aria-hidden="true" />
             <div className="action-required-copy">
-              <strong>Action required</strong>
+              <strong>{t("action_required.title")}</strong>
               <span>
-                {actionRequiredCount} demand{actionRequiredCount === 1 ? "" : "s"} need{actionRequiredCount === 1 ? "s" : ""} your input
+                {t(actionRequiredCount === 1 ? "action_required.body_one" : "action_required.body_other", { count: actionRequiredCount })}
               </span>
             </div>
           </div>
@@ -1650,15 +1726,15 @@ export function App() {
             <aside className="sidebar">
               <div className="sidebar-header">
                 <div>
-                  <h3>Demands</h3>
-                  <p className="sidebar-meta">{activeDemandCount} active · {completedDemandCount} completed</p>
+                  <h3>{t("sidebar.demands")}</h3>
+                  <p className="sidebar-meta">{t("sidebar.demand_counts", { active: activeDemandCount, completed: completedDemandCount })}</p>
                 </div>
-                <button className="sidebar-plus" onClick={openCreateDemandPanel} title="New Demand">
+                <button className="sidebar-plus" onClick={openCreateDemandPanel} title={t("sidebar.new_demand_title")}>
                   +
                 </button>
               </div>
               <button className="sidebar-back" onClick={returnToBoard}>
-                Back to board
+                {t("sidebar.back_to_board")}
               </button>
               {demands.map((demand) => (
                 (() => {
@@ -1695,7 +1771,7 @@ export function App() {
                       <button
                         type="button"
                         className="demand-link-delete"
-                        title="删除此 demand"
+                        title={t("sidebar.delete_title")}
                         disabled={controlSubmittingId === demand.demand_id}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -1733,7 +1809,7 @@ export function App() {
 	                            <button
 	                              type="button"
 	                              className="board-delete"
-	                              title="删除此 demand"
+	                              title={t("sidebar.delete_title")}
 	                              disabled={controlSubmittingId === demand.demand_id}
 	                              onClick={(event) => {
 	                                event.stopPropagation();
@@ -1757,11 +1833,11 @@ export function App() {
                         >
                           <strong>{displayDemandTitle(demand)}</strong>
                           <div className="dashboard-card-meta">
-                            <span className="dashboard-card-label">Subgoal</span>
-                            <p className="dashboard-card-subgoal">{demand.dashboard_summary?.current_subgoal_title ?? "Waiting for subgoal"}</p>
+                            <span className="dashboard-card-label">{t("dashboard.card.subgoal")}</span>
+                            <p className="dashboard-card-subgoal">{demand.dashboard_summary?.current_subgoal_title ?? t("dashboard.waiting_subgoal")}</p>
                           </div>
                           <div className="dashboard-card-footer">
-                            <small>{demand.dashboard_summary?.worker_count ?? 0} worker{(demand.dashboard_summary?.worker_count ?? 0) === 1 ? "" : "s"}</small>
+                            <small>{t((demand.dashboard_summary?.worker_count ?? 0) === 1 ? "dashboard.worker_count_one" : "dashboard.worker_count_other", { count: demand.dashboard_summary?.worker_count ?? 0 })}</small>
                             <small>{demand.state}</small>
                           </div>
                         </button>
@@ -1775,8 +1851,8 @@ export function App() {
                       onClick={openCreateDemandPanel}
                     >
                       <span className="demand-board-add-mark">+</span>
-                      <strong>Create Demand</strong>
-                      <p>Open a new demand and start clarification.</p>
+                      <strong>{t("dashboard.card.create.title")}</strong>
+                      <p>{t("dashboard.card.create.desc")}</p>
                     </button>
                   </div>
                 </div>
@@ -1787,24 +1863,24 @@ export function App() {
                   <section className="detail-hero detail-section section-a detail-hero-loading">
                     <div className="detail-hero-copy">
                       <div className="detail-hero-heading">
-                        <span className="detail-label">Demand</span>
-                        <h1>Opening demand...</h1>
+                        <span className="detail-label">{t("demand.detail.label")}</span>
+                        <h1>{t("demand.detail.opening")}</h1>
                       </div>
-                      <p className="detail-summary">Loading the demand state, alignment result, and latest planning snapshot.</p>
+                      <p className="detail-summary">{t("demand.detail.opening_desc")}</p>
                     </div>
                   </section>
                   <div className="detail-grid detail-grid-plan-only">
                     <section className="panel detail-section section-b plan-panel plan-panel-loading">
                       <div className="panel-heading">
                         <div>
-                          <p className="eyebrow">Planner View</p>
-                          <h2>Plan</h2>
+                          <p className="eyebrow">{t("planner.eyebrow")}</p>
+                          <h2>{t("planner.title")}</h2>
                         </div>
-                        <span className="status-chip">Loading</span>
+                        <span className="status-chip">{t("planner.loading_chip")}</span>
                       </div>
                       <div className="plan-loading-state">
                         <div className="typing-dots"><span>.</span><span>.</span><span>.</span></div>
-                        <p>Preparing the demand detail view.</p>
+                        <p>{t("planner.preparing")}</p>
                         <div className="plan-skeleton-list">
                           <div className="plan-skeleton-card" />
                           <div className="plan-skeleton-card" />
@@ -1821,7 +1897,7 @@ export function App() {
                   <section className="detail-hero detail-section section-a">
                     <div className="detail-hero-copy">
                       <div className="detail-hero-heading">
-                        <span className="detail-label">Demand</span>
+                        <span className="detail-label">{t("demand.detail.label")}</span>
                         <h1>{displayDemandTitle(detail.demand)}</h1>
                       </div>
                       <p className="detail-summary">{detail.demand.clarified_demand ?? detail.demand.initial_input}</p>
@@ -1829,19 +1905,19 @@ export function App() {
                     <div className="detail-hero-side">
                       <div className="detail-mini-stats">
                         <div className={`detail-mini-stat detail-mini-stat-${stateTone(detail.demand.state)}`}>
-                          <span>Status</span>
+                          <span>{t("demand.detail.status")}</span>
                           <strong>{detail.demand.state}</strong>
                         </div>
                         <div className="detail-mini-stat">
-                          <span>Phase</span>
+                          <span>{t("demand.detail.phase")}</span>
                           <strong>{detail.demand.current_phase}</strong>
                         </div>
                         <div className="detail-mini-stat">
-                          <span>Running</span>
+                          <span>{t("demand.detail.running")}</span>
                           <strong>{runningExecutionCount}</strong>
                         </div>
                         <div className="detail-mini-stat">
-                          <span>Decisions</span>
+                          <span>{t("demand.detail.decisions")}</span>
                           <strong>{openDecisionCount}</strong>
                         </div>
 	                      </div>
@@ -1851,24 +1927,24 @@ export function App() {
 	                            type="button"
 	                            className="primary"
 	                            disabled={controlSubmittingId === detail.demand.demand_id}
-	                            onClick={() => void controlDemand(detail.demand.demand_id, "resume", "Resumed from demand detail")}
+	                            onClick={() => void controlDemand(detail.demand.demand_id, "resume", t("demand.detail.resume_note"))}
 	                          >
-	                            Resume
+	                            {t("demand.detail.resume")}
 	                          </button>
 	                        ) : (
 	                          <button
 	                            type="button"
 	                            className="ghost-button"
 	                            disabled={controlSubmittingId === detail.demand.demand_id || ["COMPLETED", "FAILED", "CANCELLED"].includes(detail.demand.state)}
-	                            onClick={() => void controlDemand(detail.demand.demand_id, "pause", "Paused from demand detail")}
+	                            onClick={() => void controlDemand(detail.demand.demand_id, "pause", t("demand.detail.pause_note"))}
 	                          >
-	                            Pause
+	                            {t("demand.detail.pause")}
 	                          </button>
 	                        )}
 	                        <button
 	                          type="button"
 	                          className="ghost-button interrupt-button"
-	                          title="Interrupt all currently running executions but keep the demand active"
+	                          title={t("demand.detail.interrupt_title")}
 	                          disabled={
 	                            controlSubmittingId === detail.demand.demand_id ||
 	                            runningExecutionCount === 0 ||
@@ -1876,18 +1952,20 @@ export function App() {
 	                          }
 	                          onClick={() => {
 	                            const note = window.prompt(
-	                              `Interrupt ${runningExecutionCount} running execution${runningExecutionCount === 1 ? "" : "s"}? Optionally describe what you want to redirect to (this becomes the interrupt note).`,
+	                              t(runningExecutionCount === 1 ? "demand.detail.interrupt_prompt_one" : "demand.detail.interrupt_prompt_other", { count: runningExecutionCount }),
 	                              ""
 	                            );
 	                            if (note === null) {
 	                              return;
 	                            }
-	                            void controlDemand(detail.demand.demand_id, "interrupt", note.trim() || "Interrupted from demand detail");
+	                            void controlDemand(detail.demand.demand_id, "interrupt", note.trim() || t("demand.detail.interrupt_default_note"));
 	                          }}
 	                        >
 	                          {controlSubmittingId === detail.demand.demand_id
-	                            ? "Sending..."
-	                            : `Interrupt${runningExecutionCount > 0 ? ` (${runningExecutionCount})` : ""}`}
+	                            ? t("common.sending")
+	                            : (runningExecutionCount > 0
+	                                ? t("demand.detail.interrupt_with_count", { count: runningExecutionCount })
+	                                : t("demand.detail.interrupt"))}
 	                        </button>
 	                        {/* 详情页头部原 "Cancel Demand" 按钮按 review #6 隐藏（后端 controlDemand cancel API 仍保留）。 */}
 	                      </div>
@@ -1900,20 +1978,20 @@ export function App() {
 	                  <details className="debug-fold">
 	                    <summary className="debug-fold-summary">
 	                      <span className="debug-fold-icon" aria-hidden="true">🛠</span>
-	                      <span>调试信息（后台记录 / 计划演化）</span>
-	                      <small className="debug-fold-hint">点开查看 · 仅供开发者排查</small>
+	                      <span>{t("debug.title")}</span>
+	                      <small className="debug-fold-hint">{t("debug.hint")}</small>
 	                    </summary>
 	                  <section className="panel detail-section state-record-panel">
 	                    <div className="panel-heading">
 	                      <div>
-	                        <p className="eyebrow">Backend State Record</p>
-	                        <h2>Objective, Criteria, Memory</h2>
+	                        <p className="eyebrow">{t("state_record.eyebrow")}</p>
+	                        <h2>{t("state_record.title")}</h2>
 	                      </div>
-	                      <span className="status-chip">{detail.memory.length} memory records</span>
+	                      <span className="status-chip">{t("state_record.memory_records", { count: detail.memory.length })}</span>
 	                    </div>
                       <div className="state-record-grid">
                         <article className="state-record-card">
-                          <small>Operational Objective</small>
+                          <small>{t("state_record.objective")}</small>
                           <p className="bounded-copy">
                             {detail.demand.operational_objective?.objective
                               ?? detail.demand.clarified_demand
@@ -1921,7 +1999,7 @@ export function App() {
                           </p>
                         </article>
                         <article className="state-record-card">
-                          <small>Acceptance Criteria</small>
+                          <small>{t("state_record.acceptance")}</small>
                           {(
                             detail.demand.operational_objective?.acceptance_criteria?.length
                               ? detail.demand.operational_objective.acceptance_criteria
@@ -1933,10 +2011,10 @@ export function App() {
                                 : detail.demand.acceptance_criteria
                               ).map((item) => <li key={item}>{item}</li>)}
                             </ul>
-                          ) : <p className="bounded-copy">No acceptance criteria recorded yet.</p>}
+                          ) : <p className="bounded-copy">{t("state_record.no_acceptance")}</p>}
                         </article>
                         <article className="state-record-card">
-                          <small>Constraints</small>
+                          <small>{t("state_record.constraints")}</small>
                           {(
                             detail.demand.operational_objective?.constraints?.length
                               ? detail.demand.operational_objective.constraints
@@ -1948,10 +2026,10 @@ export function App() {
                                 : detail.demand.constraints
                               ).map((item) => <li key={item}>{item}</li>)}
                             </ul>
-                          ) : <p className="bounded-copy">No constraints recorded yet.</p>}
+                          ) : <p className="bounded-copy">{t("state_record.no_constraints")}</p>}
                         </article>
                         <article className="state-record-card">
-                          <small>Memory</small>
+                          <small>{t("state_record.memory")}</small>
                           {detail.memory.length ? (
                             <div className="memory-list">
                               {detail.memory.map((item) => (
@@ -1961,7 +2039,7 @@ export function App() {
                                 </div>
                               ))}
                             </div>
-                          ) : <p className="bounded-copy">No memory has been written for this demand.</p>}
+                          ) : <p className="bounded-copy">{t("state_record.no_memory")}</p>}
                         </article>
                       </div>
 	                  </section>
@@ -1992,19 +2070,19 @@ export function App() {
 	                      <section className="panel detail-section plan-evolution-panel">
 	                        <div className="panel-heading">
 	                          <div>
-	                            <p className="eyebrow">Plan Evolution</p>
-	                            <h2>Round {Math.max(planningRound, 1)} · refined from worker feedback</h2>
+	                            <p className="eyebrow">{t("plan_evolution.eyebrow")}</p>
+	                            <h2>{t("plan_evolution.title", { round: Math.max(planningRound, 1) })}</h2>
 	                          </div>
 	                          <span className={`status-chip ${planningRound > 1 ? "status-chip-info" : ""}`}>
-	                            {planningRound > 1 ? `${planningRound} planning rounds` : "initial plan"}
+	                            {planningRound > 1 ? t("plan_evolution.rounds_chip", { count: planningRound }) : t("plan_evolution.initial_chip")}
 	                          </span>
 	                        </div>
 	                        <p className="bounded-copy plan-evolution-intro">
-	                          The plan is not frozen up-front. Each subgoal is dispatched, observed, and the next batch is shaped by what we just learned from workers.
+	                          {t("plan_evolution.intro")}
 	                        </p>
 	                        <div className="plan-evolution-grid">
 	                          <article className="plan-evolution-card">
-	                            <small>What we have done</small>
+	                            <small>{t("plan_evolution.done_label")}</small>
 	                            {traceSummary ? (
 	                              <p className="bounded-copy">{traceSummary}</p>
 	                            ) : traceMemory.length ? (
@@ -2014,11 +2092,11 @@ export function App() {
 	                                ))}
 	                              </ul>
 	                            ) : (
-	                              <p className="bounded-copy">No execution trace recorded yet.</p>
+	                              <p className="bounded-copy">{t("plan_evolution.no_trace")}</p>
 	                            )}
 	                          </article>
 	                          <article className="plan-evolution-card">
-	                            <small>What we learned</small>
+	                            <small>{t("plan_evolution.learned_label")}</small>
 	                            {lessonsSummary ? (
 	                              <p className="bounded-copy">{lessonsSummary}</p>
 	                            ) : lessonsMemory.length ? (
@@ -2028,25 +2106,25 @@ export function App() {
 	                                ))}
 	                              </ul>
 	                            ) : (
-	                              <p className="bounded-copy">No lessons captured yet. The next round will absorb feedback once available.</p>
+	                              <p className="bounded-copy">{t("plan_evolution.no_lessons")}</p>
 	                            )}
 	                          </article>
 	                          <article className="plan-evolution-card plan-evolution-card-wide">
-	                            <small>Recent worker feedback shaping the next subgoal</small>
+	                            <small>{t("plan_evolution.feedback_label")}</small>
 	                            {blockerEvents.length ? (
 	                              <ul className="plan-evolution-feedback">
 	                                {blockerEvents.map((result, idx) => (
 	                                  <li key={`${result.execution_id}-${idx}`}>
-	                                    <span className="pill pill-warning">{result.blocker_reason?.code ?? "feedback"}</span>
+	                                    <span className="pill pill-warning">{result.blocker_reason?.code ?? t("plan_evolution.feedback_default_code")}</span>
 	                                    <p className="bounded-copy">{result.blocker_reason?.message}</p>
 	                                    {result.suggested_next_step ? (
-	                                      <small>Next step suggested: {result.suggested_next_step}</small>
+	                                      <small>{t("plan_evolution.next_step_suggested", { step: result.suggested_next_step })}</small>
 	                                    ) : null}
 	                                  </li>
 	                                ))}
 	                              </ul>
 	                            ) : (
-	                              <p className="bounded-copy">No worker blockers yet — boundaries will be tightened as practical feedback arrives.</p>
+	                              <p className="bounded-copy">{t("plan_evolution.no_blockers")}</p>
 	                            )}
 	                          </article>
 	                        </div>
@@ -2059,10 +2137,10 @@ export function App() {
 	                    <section className="panel detail-section decision-panel">
 	                      <div className="panel-heading">
 	                        <div>
-	                          <p className="eyebrow">Human Decision Panel</p>
-	                          <h2>{openDecisions.length} action required</h2>
+	                          <p className="eyebrow">{t("decision.eyebrow")}</p>
+	                          <h2>{t("decision.title_count", { count: openDecisions.length })}</h2>
 	                        </div>
-	                        <span className="status-chip status-chip-warning">waiting on you</span>
+	                        <span className="status-chip status-chip-warning">{t("decision.waiting_on_you")}</span>
 	                      </div>
 	                      <div className="list-stack">
 	                        {openDecisions.map((decision) => (
@@ -2084,15 +2162,15 @@ export function App() {
 	                                    ? "pill-accent"
 	                                    : "pill-warning"
 	                              }`}>{decisionReasonLabel(decision.reason_code)}</small>
-	                              <small>{decision.source ?? "scheduler"}</small>
+	                              <small>{decision.source ?? t("common.scheduler")}</small>
 	                            </div>
 	                            <p className="bounded-copy decision-copy">{summarizeDecisionPrompt(decision.prompt)}</p>
 	                            <label className="field">
-	                              <span>Reply / extra context</span>
+	                              <span>{t("decision.reply_label")}</span>
 	                              <textarea
 	                                value={decisionNoteFor(decision.decision_id)}
 	                                onChange={(event) => updateDecisionNote(decision.decision_id, event.target.value)}
-	                                placeholder="Provide missing context or instructions when the selected action needs it"
+	                                placeholder={t("decision.reply_placeholder")}
 	                              />
 	                            </label>
 	                            <div className="decision-modal-actions">
@@ -2108,19 +2186,19 @@ export function App() {
                     <section className="panel detail-section section-b plan-panel">
                       <div className="panel-heading">
                         <div>
-                          <p className="eyebrow">Planner View</p>
+                          <p className="eyebrow">{t("planner.eyebrow")}</p>
                           <h2>
-                            Plan
+                            {t("planner.title")}
                             {(latestPlan?.planning_round ?? 0) > 1 ? (
                               <span className="plan-round-badge">v{latestPlan?.planning_round}</span>
                             ) : null}
                           </h2>
-                          <small className="plan-subnote">Progressive: each subgoal is shaped by the previous worker feedback.</small>
+                          <small className="plan-subnote">{t("planner.subnote")}</small>
                         </div>
                         <div className="plan-heading-actions">
                           {/* Replan 按钮按 review 反馈从前端去掉。后端 requestReplan API 仍保留，
                               通过 DECISION_RESPONSE_RECEIVED(action=ProvideInfo, note 含 "replan") 触发。 */}
-                          <span className="status-chip">{detail.subgoals.length} subgoals</span>
+                          <span className="status-chip">{t("planner.subgoals_chip", { count: detail.subgoals.length })}</span>
                         </div>
                       </div>
                       <div className={`plan-scroll${planIsExiting ? " is-replan-exiting" : ""}${planIsTransitioning ? " is-replanning" : ""}`}>
@@ -2128,13 +2206,13 @@ export function App() {
                           <div className="plan-waiting-state">
                             <div className="plan-waiting-head">
                               <div>
-                                <p className="eyebrow">Alignment</p>
-                                <h3>Clarifying demand before planning</h3>
+                                <p className="eyebrow">{t("alignment.eyebrow")}</p>
+                                <h3>{t("alignment.title")}</h3>
                               </div>
-                              <span className="status-chip status-chip-warning">Waiting for clear scope</span>
+                              <span className="status-chip status-chip-warning">{t("alignment.chip")}</span>
                             </div>
                             <p className="bounded-copy">
-                              Nodikt is still aligning the demand. Once the objective is clear enough, this panel will transition into the execution plan automatically.
+                              {t("alignment.copy")}
                             </p>
                             <div className="conversation-scroll modal-conversation-scroll detail-conversation-scroll">
                               {conversationHistory.map((message, index) => {
@@ -2143,8 +2221,8 @@ export function App() {
                                   ? message.content.replace(/^\[Recon findings\]\s*/, "")
                                   : message.content;
                                 const label = isReconFindings
-                                  ? "Recon Findings"
-                                  : message.role === "assistant" ? "Assistant" : "You";
+                                  ? t("alignment.recon_findings")
+                                  : message.role === "assistant" ? t("common.assistant") : t("common.you");
                                 const cls = `conversation-turn ${message.role === "assistant" ? "assistant" : "user"}${isReconFindings ? " conversation-turn-recon-findings" : ""}`;
                                 return (
                                   <div key={`${message.created_at}-${index}`} className={cls}>
@@ -2155,7 +2233,7 @@ export function App() {
                               })}
                               {assistantTyping ? (
                                 <div className="conversation-turn assistant conversation-turn-typing">
-                                  <small>Assistant</small>
+                                  <small>{t("common.assistant")}</small>
                                   <div className="typing-dots"><span>.</span><span>.</span><span>.</span></div>
                                 </div>
                               ) : null}
@@ -2164,23 +2242,23 @@ export function App() {
                             {detail.demand.metadata?.clarification_question ? (
                               <>
                                 <label className="field">
-                                  <span>Clarification Reply</span>
+                                  <span>{t("alignment.reply_label")}</span>
                                   <textarea
                                     value={clarificationReply}
                                     onChange={(event) => setClarificationReply(event.target.value)}
-                                    placeholder="Answer with the missing repository path, workspace root, or other required execution context"
+                                    placeholder={t("alignment.reply_placeholder")}
                                   />
                                 </label>
                                 <div className="modal-actions">
                                   <button className="primary" disabled={replySubmitting || !clarificationReply.trim()} onClick={sendClarificationReply}>
-                                    {replySubmitting ? "Sending..." : "Send Clarification Reply"}
+                                    {replySubmitting ? t("common.sending") : t("alignment.send_reply")}
                                   </button>
                                 </div>
                               </>
                             ) : (
                               <div className="plan-loading-inline">
                                 <div className="typing-dots"><span>.</span><span>.</span><span>.</span></div>
-                                <p>Waiting for the next alignment turn.</p>
+                                <p>{t("alignment.waiting_next")}</p>
                               </div>
                             )}
                           </div>
@@ -2188,15 +2266,15 @@ export function App() {
                           <div className="plan-loading-state plan-loading-state-replan">
                             <div className="plan-waiting-head">
                               <div>
-                                <p className="eyebrow">Planning</p>
-                                <h3>{planIsTransitioning ? "Replanning execution flow" : "Generating overall plan"}</h3>
+                                <p className="eyebrow">{t("planning.eyebrow")}</p>
+                                <h3>{planIsTransitioning ? t("planning.replanning") : t("planning.generating")}</h3>
                               </div>
-                              <span className="status-chip status-chip-info">Planning in progress</span>
+                              <span className="status-chip status-chip-info">{t("planning.chip")}</span>
                             </div>
                             <p className="bounded-copy">
                               {planIsTransitioning
-                                ? "Refreshing the execution plan with your latest instruction. Existing steps are being replaced with a new planning pass."
-                                : "The planner is breaking this demand into executable steps and frontier subgoals. The plan cards will fade in here once the first round is ready."}
+                                ? t("planning.replan_copy")
+                                : t("planning.gen_copy")}
                             </p>
                             <div className="plan-loading-inline plan-loading-inline-pixel">
                               <div className="pixel-loader" aria-hidden="true">
@@ -2210,7 +2288,7 @@ export function App() {
                                 <span className="pixel-loader-cell" />
                                 <span className="pixel-loader-cell" />
                               </div>
-                              <p>Thinking through execution structure</p>
+                              <p>{t("planning.thinking")}</p>
                             </div>
                           </div>
                         ) : (
@@ -2266,7 +2344,7 @@ export function App() {
                                           const assignedWorkerId = assignedWorkerBySubgoalId.get(subgoal.subgoal_id);
                                           const assignedWorkerLabel = assignedWorkerId
                                             ? (workerNameById.get(assignedWorkerId) ?? assignedWorkerId)
-                                            : "Unassigned";
+                                            : t("common.unassigned");
                                           const stage = subgoalStage(subgoal.state, execution, linkedDecision);
                                           const inspectable = hasInspectableIssue(stage, linkedDecision);
 
@@ -2276,7 +2354,7 @@ export function App() {
                                                 <strong>
                                                   {subgoal.title}
                                                   {subgoal.kind === "recon" ? (
-                                                    <span className="subgoal-kind-badge subgoal-kind-recon" title="Reconnaissance subgoal: read-only inspection to gather info for the next planning round">RECON</span>
+                                                    <span className="subgoal-kind-badge subgoal-kind-recon" title={t("subgoal.recon_badge_title")}>RECON</span>
                                                   ) : null}
                                                 </strong>
                                                 <p>{subgoal.objective}</p>
@@ -2287,7 +2365,7 @@ export function App() {
                                                 ) : null}
                                               </div>
                                               <div className="subgoal-zone subgoal-zone-worker">
-                                                <small>Assigned Worker</small>
+                                                <small>{t("subgoal.assigned_worker")}</small>
                                                 <span className={`subgoal-assignment-badge${assignedWorkerId ? "" : " is-unassigned"}`}>
                                                   {assignedWorkerLabel}
                                                 </span>
@@ -2313,23 +2391,23 @@ export function App() {
                                                     <button
                                                       type="button"
                                                       className="subgoal-interrupt-button"
-                                                      title="Interrupt this execution"
+                                                      title={t("subgoal.interrupt_title")}
                                                       disabled={controlSubmittingId === execution.execution_id}
                                                       onClick={(event) => {
                                                         event.stopPropagation();
-                                                        if (!window.confirm(`Interrupt subgoal "${subgoal.title}"? The worker will stop and the subgoal will be marked blocked so you can redirect.`)) {
+                                                        if (!window.confirm(t("subgoal.interrupt_confirm", { title: subgoal.title }))) {
                                                           return;
                                                         }
-                                                        void interruptExecution(execution.execution_id, detail.demand.demand_id, `Interrupted subgoal: ${subgoal.title}`);
+                                                        void interruptExecution(execution.execution_id, detail.demand.demand_id, t("subgoal.interrupt_note", { title: subgoal.title }));
                                                       }}
                                                     >
-                                                      {controlSubmittingId === execution.execution_id ? "..." : "Interrupt"}
+                                                      {controlSubmittingId === execution.execution_id ? "..." : t("subgoal.interrupt_label")}
                                                     </button>
                                                   ) : null}
                                                 </div>
                                               </div>
                                           );
-                                        }) : <p className="bounded-copy">No frontier subgoals are attached to this plan item yet.</p>}
+                                        }) : <p className="bounded-copy">{t("subgoal.no_frontier")}</p>}
                                       </div>
                                     </div>
                                   ) : null}
@@ -2343,8 +2421,8 @@ export function App() {
                               <div className="plan-card-expanded">
                                 <div className="panel-heading compact-heading">
                                   <div>
-                                    <p className="eyebrow">Execution Frontier</p>
-                                    <h2>Subgoals</h2>
+                                    <p className="eyebrow">{t("frontier.eyebrow")}</p>
+                                    <h2>{t("frontier.title")}</h2>
                                   </div>
                                 </div>
                                 <div className="list-stack plan-subgoal-stack">
@@ -2354,7 +2432,7 @@ export function App() {
                                     const assignedWorkerId = assignedWorkerBySubgoalId.get(subgoal.subgoal_id);
                                     const assignedWorkerLabel = assignedWorkerId
                                       ? (workerNameById.get(assignedWorkerId) ?? assignedWorkerId)
-                                      : "Unassigned";
+                                      : t("common.unassigned");
                                     const stage = subgoalStage(subgoal.state, execution, linkedDecision);
                                     const inspectable = hasInspectableIssue(stage, linkedDecision);
 
@@ -2364,7 +2442,7 @@ export function App() {
                                           <strong>
                                             {subgoal.title}
                                             {subgoal.kind === "recon" ? (
-                                              <span className="subgoal-kind-badge subgoal-kind-recon" title="Reconnaissance subgoal: read-only inspection to gather info for the next planning round">RECON</span>
+                                              <span className="subgoal-kind-badge subgoal-kind-recon" title={t("subgoal.recon_badge_title")}>RECON</span>
                                             ) : null}
                                           </strong>
                                           <p>{subgoal.objective}</p>
@@ -2375,7 +2453,7 @@ export function App() {
                                           ) : null}
                                         </div>
                                         <div className="subgoal-zone subgoal-zone-worker">
-                                          <small>Assigned Worker</small>
+                                          <small>{t("subgoal.assigned_worker")}</small>
                                           <span className={`subgoal-assignment-badge${assignedWorkerId ? "" : " is-unassigned"}`}>
                                             {assignedWorkerLabel}
                                           </span>
@@ -2401,17 +2479,17 @@ export function App() {
                                             <button
                                               type="button"
                                               className="subgoal-interrupt-button"
-                                              title="Interrupt this execution"
+                                              title={t("subgoal.interrupt_title")}
                                               disabled={controlSubmittingId === execution.execution_id}
                                               onClick={(event) => {
                                                 event.stopPropagation();
-                                                if (!window.confirm(`Interrupt subgoal "${subgoal.title}"? The worker will stop and the subgoal will be marked blocked so you can redirect.`)) {
+                                                if (!window.confirm(t("subgoal.interrupt_confirm", { title: subgoal.title }))) {
                                                   return;
                                                 }
-                                                void interruptExecution(execution.execution_id, detail.demand.demand_id, `Interrupted subgoal: ${subgoal.title}`);
+                                                void interruptExecution(execution.execution_id, detail.demand.demand_id, t("subgoal.interrupt_note", { title: subgoal.title }));
                                               }}
                                             >
-                                              {controlSubmittingId === execution.execution_id ? "..." : "Interrupt"}
+                                              {controlSubmittingId === execution.execution_id ? "..." : t("subgoal.interrupt_label")}
                                             </button>
                                           ) : null}
                                         </div>
@@ -2449,15 +2527,15 @@ export function App() {
                   <div className="create-modal" onClick={(event) => event.stopPropagation()}>
                     <div className="panel-heading">
                       <div>
-                        <p className="eyebrow">{detail && demandNeedsClarification(detail.demand) ? "Alignment" : "New Demand"}</p>
-                        <h2>{detail && demandNeedsClarification(detail.demand) ? "Clarify Demand" : "Create Demand"}</h2>
+                        <p className="eyebrow">{detail && demandNeedsClarification(detail.demand) ? t("create_demand.alignment_eyebrow") : t("create_demand.new_eyebrow")}</p>
+                        <h2>{detail && demandNeedsClarification(detail.demand) ? t("create_demand.clarify_title") : t("create_demand.create_title")}</h2>
                       </div>
-                      <button className="ghost-button" onClick={closeCreateModal}>Close</button>
+                      <button className="ghost-button" onClick={closeCreateModal}>{t("common.close")}</button>
                     </div>
                     {detail && demandNeedsClarification(detail.demand) ? (
                       <div className="alignment-modal-body">
                         <p className="bounded-copy">
-                          Stay in alignment until the demand is clear. Once clarification is complete, Nodikt will enter the demand page and show the execution plan.
+                          {t("create_demand.alignment_copy")}
                         </p>
                         <div className="conversation-scroll modal-conversation-scroll">
                           {conversationHistory.map((message, index) => {
@@ -2466,8 +2544,8 @@ export function App() {
                               ? message.content.replace(/^\[Recon findings\]\s*/, "")
                               : message.content;
                             const label = isReconFindings
-                              ? "Recon Findings"
-                              : message.role === "assistant" ? "Assistant" : "You";
+                              ? t("alignment.recon_findings")
+                              : message.role === "assistant" ? t("common.assistant") : t("common.you");
                             const cls = `conversation-turn ${message.role === "assistant" ? "assistant" : "user"}${isReconFindings ? " conversation-turn-recon-findings" : ""}`;
                             return (
                               <div key={`${message.created_at}-${index}`} className={cls}>
@@ -2478,7 +2556,7 @@ export function App() {
                           })}
                           {assistantTyping ? (
                             <div className="conversation-turn assistant conversation-turn-typing">
-                              <small>Assistant</small>
+                              <small>{t("common.assistant")}</small>
                               <div className="typing-dots"><span>.</span><span>.</span><span>.</span></div>
                             </div>
                           ) : null}
@@ -2486,35 +2564,34 @@ export function App() {
                         {detail.demand.metadata?.clarification_question ? (
                           <>
                             <label className="field">
-                              <span>Clarification Reply</span>
+                              <span>{t("alignment.reply_label")}</span>
                               <textarea
                                 value={clarificationReply}
                                 onChange={(event) => setClarificationReply(event.target.value)}
-                                placeholder="Answer with the missing repository path, workspace root, or other required execution context"
+                                placeholder={t("alignment.reply_placeholder")}
                               />
                             </label>
                             <div className="modal-actions">
-                              <button className="ghost-button" onClick={closeCreateModal}>Cancel</button>
-                              <button className="primary" disabled={replySubmitting || !clarificationReply.trim()} onClick={sendClarificationReply}>{replySubmitting ? "Sending..." : "Send Clarification Reply"}</button>
+                              <button className="ghost-button" onClick={closeCreateModal}>{t("common.cancel")}</button>
+                              <button className="primary" disabled={replySubmitting || !clarificationReply.trim()} onClick={sendClarificationReply}>{replySubmitting ? t("common.sending") : t("alignment.send_reply")}</button>
                             </div>
                           </>
                         ) : (
-                          <p className="bounded-copy">Waiting for the next clarification turn.</p>
+                          <p className="bounded-copy">{t("alignment.waiting_turn")}</p>
                         )}
                       </div>
                     ) : (
                       <>
                         <p className="bounded-copy">
-                          Start with the demand in natural language. Nodikt will open the detail view immediately and stream alignment and planning progress there.
+                          {t("create_demand.copy")}
                         </p>
                         <textarea
                           value={newDemand}
                           onChange={(event) => setNewDemand(event.target.value)}
-                          placeholder="Describe the demand, expected output, project path, and key constraints"
+                          placeholder={t("create_demand.placeholder")}
                         />
                         <div className="modal-actions">
-                          <button className="ghost-button" onClick={closeCreateModal}>Cancel</button>
-                          <button className="primary" disabled={createSubmitting || !newDemand.trim()} onClick={createDemand}>{createSubmitting ? "Creating..." : "Create Demand"}</button>
+                          <button className="primary" disabled={createSubmitting || !newDemand.trim()} onClick={createDemand}>{createSubmitting ? t("common.creating") : t("create_demand.submit")}</button>
                         </div>
                       </>
                     )}
@@ -2527,26 +2604,26 @@ export function App() {
                   <div className={`decision-modal subgoal-result-modal${subgoalDialogClosing ? " is-closing" : ""}`} onClick={(event) => event.stopPropagation()}>
                     <div className="panel-heading">
                       <div>
-                        <p className="eyebrow">Subgoal Detail</p>
+                        <p className="eyebrow">{t("subgoal_detail.eyebrow")}</p>
                         <h2>{selectedDialogSubgoal.title}</h2>
                       </div>
                       <button className="ghost-button" type="button" onClick={closeSubgoalDialog}>
-                        Close
+                        {t("common.close")}
                       </button>
                     </div>
                     {selectedSubgoalDialog.mode === "success" ? (
                       <div className="subgoal-result-stack">
                         <section className="decision-modal-card subgoal-result-card">
                           <div className="decision-modal-head">
-                            <small className="pill pill-success">Succeeded</small>
+                            <small className="pill pill-success">{t("subgoal_detail.succeeded")}</small>
                             {selectedDialogExecution ? <small>{selectedDialogExecution.execution_id}</small> : null}
                           </div>
                           <div className="subgoal-result-block">
-                            <span className="subgoal-result-label">Result</span>
-                            <pre className="decision-modal-prompt">{selectedDialogExecution?.claimed_outcome || selectedDialogExecution?.compressed_history || "No result text was captured."}</pre>
+                            <span className="subgoal-result-label">{t("subgoal_detail.result")}</span>
+                            <pre className="decision-modal-prompt">{selectedDialogExecution?.claimed_outcome || selectedDialogExecution?.compressed_history || t("subgoal_detail.no_result")}</pre>
                           </div>
                           <div className="subgoal-result-block">
-                            <span className="subgoal-result-label">Artifacts</span>
+                            <span className="subgoal-result-label">{t("subgoal_detail.artifacts")}</span>
                             {selectedDialogExecution?.artifacts?.length ? (
                               <div className="artifact-list">
                                 {selectedDialogExecution.artifacts.map((artifact) => (
@@ -2557,7 +2634,7 @@ export function App() {
                                 ))}
                               </div>
                             ) : (
-                              <p className="bounded-copy">No artifacts were recorded for this subgoal.</p>
+                              <p className="bounded-copy">{t("subgoal_detail.no_artifacts")}</p>
                             )}
                           </div>
                         </section>
@@ -2567,35 +2644,35 @@ export function App() {
                         <section className="decision-modal-card subgoal-result-card">
                           <div className="decision-modal-head">
                             <small className={`pill ${selectedSubgoalDialog.mode === "failed" ? "pill-danger" : "pill-warning"}`}>
-                              {selectedSubgoalDialog.mode === "failed" ? "Failed" : "Pending"}
+                              {selectedSubgoalDialog.mode === "failed" ? t("subgoal_detail.failed") : t("subgoal_detail.pending")}
                             </small>
                             {selectedDialogDecision?.reason_code ? <small>{selectedDialogDecision.reason_code}</small> : null}
                           </div>
                           <div className="subgoal-result-block">
                             <span className="subgoal-result-label">
-                              {selectedSubgoalDialog.mode === "failed" ? "Failure Detail" : "Decision Detail"}
+                              {selectedSubgoalDialog.mode === "failed" ? t("subgoal_detail.failure_detail") : t("subgoal_detail.decision_detail")}
                             </span>
                             <pre className="decision-modal-prompt">
                               {selectedDialogWorkerResult?.blocker_reason?.message
                                 || rawSubgoalIssueText(selectedDialogExecution, selectedDialogWorkerResult, selectedDialogDecision)
                                 || selectedDialogExecution?.claimed_outcome
                                 || selectedDialogExecution?.compressed_history
-                                || "No detail was recorded."}
+                                || t("subgoal_detail.no_detail")}
                             </pre>
                           </div>
                           <div className="subgoal-result-block">
-                            <span className="subgoal-result-label">Reason</span>
+                            <span className="subgoal-result-label">{t("subgoal_detail.reason")}</span>
                             <p className="bounded-copy">
                               {selectedDialogDecision?.reason_code
                                 || selectedDialogExecution?.result_status
                                 || selectedDialogExecution?.state
-                                || "Unknown"}
+                                || t("common.unknown")}
                             </p>
                           </div>
                         </section>
                         <section className="decision-modal-card subgoal-result-card">
                           <div className="decision-modal-head">
-                            <small className="pill pill-warning">Suggestions</small>
+                            <small className="pill pill-warning">{t("subgoal_detail.suggestions")}</small>
                           </div>
                           <div className="suggestion-dialogue">
                             {selectedDecisionConversation.length ? (
@@ -2604,7 +2681,7 @@ export function App() {
                                   key={`${message.created_at}-${index}`}
                                   className={`conversation-turn ${message.role === "assistant" ? "assistant" : "user"} suggestion-turn`}
                                 >
-                                  <small>{message.role === "assistant" ? "故障助手" : "你"}</small>
+                                  <small>{message.role === "assistant" ? t("demand.detail.assistant") : t("common.you")}</small>
                                   {message.role === "assistant" ? (
                                     <p className="suggestion-message">{summarizeDecisionPrompt(message.content)}</p>
                                   ) : (
@@ -2614,15 +2691,15 @@ export function App() {
                               ))
                             ) : (
                               <div className="conversation-turn assistant suggestion-turn">
-                                <small>故障助手</small>
+                                <small>{t("demand.detail.assistant")}</small>
                                 <p className="suggestion-message">
-                                  {summarizeDecisionPrompt(selectedDialogDecision?.prompt ?? "I can help you understand this failure and suggest the next unblock step.")}
+                                  {summarizeDecisionPrompt(selectedDialogDecision?.prompt ?? t("subgoal_detail.default_prompt"))}
                                 </p>
                               </div>
                             )}
                             {decisionSubmitting === selectedDialogDecision?.decision_id ? (
                               <div className="conversation-turn assistant suggestion-turn conversation-turn-typing">
-                                <small>故障助手</small>
+                                <small>{t("demand.detail.assistant")}</small>
                                 <div className="typing-dots"><span>.</span><span>.</span><span>.</span></div>
                               </div>
                             ) : null}
@@ -2630,11 +2707,11 @@ export function App() {
                           {selectedDialogDecision ? (
                             <>
                               <label className="field">
-                                <span>Reply</span>
+                                <span>{t("subgoal_detail.reply")}</span>
                                 <textarea
                                   value={decisionNoteFor(selectedDialogDecision.decision_id)}
                                   onChange={(event) => updateDecisionNote(selectedDialogDecision.decision_id, event.target.value)}
-                                  placeholder="Reply to this failed subgoal and provide the next instruction or missing context"
+                                  placeholder={t("subgoal_detail.reply_placeholder")}
                                 />
 	                              </label>
 	                              <div className="decision-modal-actions">
@@ -2656,75 +2733,72 @@ export function App() {
           <section className="content single">
             <div className="hero-panel compact">
               <div className="hero-copy">
-                <p className="eyebrow">Worker Fleet</p>
-                <h1>Observe runtime capacity and adapter readiness.</h1>
+                <p className="eyebrow">{t("workers.eyebrow")}</p>
+                <h1>{t("workers.title")}</h1>
               </div>
               <div className="hero-metrics">
                 <div className="metric-card">
-                  <span>Total</span>
+                  <span>{t("workers.total")}</span>
                   <strong>{workers.length}</strong>
                 </div>
                 <button type="button" className="metric-card worker-add-card" onClick={() => setShowWorkerCreateModal(true)}>
-                  <span>Add</span>
+                  <span>{t("workers.add")}</span>
                   <strong>+</strong>
                 </button>
               </div>
             </div>
             <div className="worker-tiles">
-              {workerTiles.map((worker) => {
-                // placeholder 卡片不暴露编辑 / 删除 / 详情（它对应的真实 worker 还没创建）
-                const isPlaceholder = worker.key.startsWith("placeholder-");
-                return (
-                  <div
-                    key={worker.key}
-                    className={`worker-tile${isPlaceholder ? "" : " worker-tile-clickable"}`}
-                    onClick={isPlaceholder ? undefined : () => setSelectedWorkerId(worker.key)}
-                    role={isPlaceholder ? undefined : "button"}
-                    tabIndex={isPlaceholder ? undefined : 0}
-                  >
-                    <div className="worker-tile-top">
-                      <span className={`worker-lamp worker-lamp-${worker.lamp}`} />
-                      <small>{worker.subtitle}</small>
-                      {!isPlaceholder && (
-                        <div className="worker-tile-actions" onClick={(event) => event.stopPropagation()}>
-                          <button
-                            type="button"
-                            className="worker-tile-action"
-                            title="重命名"
-                            onClick={() => void renameWorker(worker.key, worker.name)}
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            type="button"
-                            className="worker-tile-action worker-tile-action-danger"
-                            title="删除"
-                            onClick={() => void deleteWorker(worker.key, worker.name)}
-                          >
-                            🗑
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <strong>{worker.name}</strong>
-                    {worker.status ? <small>{worker.status}</small> : null}
-                    {worker.meta ? <p className="worker-tile-meta">{worker.meta}</p> : null}
-                    <div className="worker-capabilities">
-                      {worker.capabilities.map((capability) => (
-                        <span key={`${worker.key}-${capability}`} className="worker-capability-chip">{capability}</span>
-                      ))}
+              {workerTiles.map((worker) => (
+                <div
+                  key={worker.key}
+                  className="worker-tile worker-tile-clickable"
+                  onClick={() => {
+                    const target = workers.find((w) => w.worker_id === worker.key);
+                    if (target) openWorkerDetail(target);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="worker-tile-top">
+                    <span className={`worker-lamp worker-lamp-${worker.lamp}`} />
+                    <small>{worker.subtitle}</small>
+                    <div className="worker-tile-actions" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="worker-tile-action"
+                        title={t("workers.rename_title")}
+                        onClick={() => void renameWorker(worker.key, worker.name)}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        type="button"
+                        className="worker-tile-action worker-tile-action-danger"
+                        title={t("workers.delete_title")}
+                        onClick={() => void deleteWorker(worker.key, worker.name)}
+                      >
+                        🗑
+                      </button>
                     </div>
                   </div>
-                );
-              })}
+                  <strong>{worker.name}</strong>
+                  {worker.status ? <small>{worker.status}</small> : null}
+                  {worker.meta ? <p className="worker-tile-meta">{worker.meta}</p> : null}
+                  <div className="worker-capabilities">
+                    {worker.capabilities.map((capability) => (
+                      <span key={`${worker.key}-${capability}`} className="worker-capability-chip">{capability}</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
             {detail && (
               <div className="worker-grid worker-runtime-grid">
                 <section className="panel">
                   <div className="panel-heading">
                     <div>
-                      <p className="eyebrow">Selected Demand Runtime</p>
-                      <h2>Worker Runtime</h2>
+                      <p className="eyebrow">{t("runtime.eyebrow")}</p>
+                      <h2>{t("runtime.title")}</h2>
                     </div>
                   </div>
                   <div className="list-stack">
@@ -2744,16 +2818,16 @@ export function App() {
                 <section className="panel">
                   <div className="panel-heading">
                     <div>
-                      <p className="eyebrow">Selected Demand Trace</p>
-                      <h2>Recent Events</h2>
+                      <p className="eyebrow">{t("trace.eyebrow")}</p>
+                      <h2>{t("trace.title")}</h2>
                     </div>
                   </div>
                   {hiddenHeartbeatCount > 0 && (
-                    <p className="panel-note">已隐藏 {hiddenHeartbeatCount} 条心跳事件，保持时间线清爽。</p>
+                    <p className="panel-note">{t("panel.heartbeats_hidden", { count: hiddenHeartbeatCount })}</p>
                   )}
                   <div className="list-stack">
                     {visibleTimelineEvents.map((item) => {
-                      const human = humanizeEvent(item);
+                      const human = humanizeEvent(item, t);
                       return (
                         <div
                           key={item.event_id}
@@ -2761,7 +2835,7 @@ export function App() {
                           title={`${item.event_type} @ ${item.created_at}`}
                         >
                           <strong>{human.label}</strong>
-                          <small>{formatRelativeShort(item.created_at, Date.now())}</small>
+                          <small>{formatRelativeShort(item.created_at, Date.now(), t)}</small>
                         </div>
                       );
                     })}
@@ -2773,73 +2847,117 @@ export function App() {
         )}
 
         {/* Worker 详情弹窗：点击 worker 卡片打开，展示 adapter / runtime / config / env / 状态 */}
-        {tab === "Workers" && selectedWorkerId && (() => {
+        {tab === "Workers" && selectedWorkerId && workerEditDraft && (() => {
           const w = workers.find((item) => item.worker_id === selectedWorkerId);
           if (!w) return null;
           const cfg = w.config ?? {};
           const envEntries = Object.entries(cfg.env ?? {});
-          return (
-            <div className="modal-layer" onClick={() => setSelectedWorkerId(null)}>
+          const draft = workerEditDraft;
+          // 关键：用 createPortal 把 modal 挂到 document.body，逃出 <main class="layout">
+          // (z-index:10) 这个父级 stacking context。否则就算 .modal-layer 自己有 z-index:50，
+          // 它也只在 .layout 内部参与排序，外面的 .topbar (z-index:20) / .action-required-bar (z-index:19)
+          // 仍然会盖住它的某些区域 —— 用户体感就是"close 点不到，按了没反应"。
+          return createPortal(
+            <div className="modal-layer" onClick={closeWorkerDetail}>
               <div className="create-modal worker-detail-modal" onClick={(event) => event.stopPropagation()}>
                 <div className="panel-heading">
                   <div>
-                    <p className="eyebrow">Worker Detail</p>
+                    <p className="eyebrow">{t("worker_detail.eyebrow")}</p>
                     <h2>{w.name}</h2>
                   </div>
-                  <button className="ghost-button" onClick={() => setSelectedWorkerId(null)}>Close</button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      closeWorkerDetail();
+                    }}
+                  >
+                    {t("common.close")}
+                  </button>
                 </div>
                 <div className="worker-detail-grid">
                   <div className="worker-detail-row">
-                    <span>Worker ID</span>
+                    <span>{t("worker_detail.id")}</span>
                     <code>{w.worker_id}</code>
                   </div>
                   <div className="worker-detail-row">
-                    <span>Adapter</span>
+                    <span>{t("worker_detail.adapter")}</span>
                     <strong>{w.adapter_type}</strong>
                   </div>
+                  <label className="field worker-detail-field">
+                    <span>{t("workers.modal.field.name")}</span>
+                    <input
+                      value={draft.name}
+                      onChange={(event) => updateWorkerEditDraft("name", event.target.value)}
+                    />
+                  </label>
+                  <label className="field worker-detail-field">
+                    <span>{t("worker_detail.runtime")}</span>
+                    <select
+                      value={draft.runtime_type}
+                      onChange={(event) => updateWorkerEditDraft("runtime_type", event.target.value as RuntimeType)}
+                    >
+                      <option value="local_command">local_command</option>
+                      <option value="http">http</option>
+                      <option value="websocket">websocket</option>
+                    </select>
+                  </label>
+                  <label className="field worker-detail-field">
+                    <span>{t("workers.modal.field.workspace")}</span>
+                    <input
+                      value={draft.workspace_root}
+                      onChange={(event) => updateWorkerEditDraft("workspace_root", event.target.value)}
+                      placeholder={t("settings.general.workspace.placeholder")}
+                    />
+                  </label>
+                  <label className="field worker-detail-field">
+                    <span>{t("workers.modal.field.capabilities")}</span>
+                    <input
+                      value={draft.capabilities}
+                      onChange={(event) => updateWorkerEditDraft("capabilities", event.target.value)}
+                      placeholder={t("worker_create.capabilities_placeholder")}
+                    />
+                  </label>
+                  <label className="field worker-detail-field">
+                    <span>{t("worker_detail.max_concurrency")}</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={draft.max_concurrency}
+                      onChange={(event) => updateWorkerEditDraft("max_concurrency", Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field worker-detail-field">
+                    <span>{t("workers.modal.field.endpoint")}</span>
+                    <input
+                      value={draft.endpoint}
+                      onChange={(event) => updateWorkerEditDraft("endpoint", event.target.value)}
+                      placeholder={t("workers.detail.endpoint_placeholder")}
+                    />
+                  </label>
                   <div className="worker-detail-row">
-                    <span>Runtime</span>
-                    <strong>{w.runtime_type ?? "local_command"}</strong>
-                  </div>
-                  <div className="worker-detail-row">
-                    <span>Status</span>
+                    <span>{t("worker_detail.status")}</span>
                     <strong>{w.status}</strong>
                   </div>
                   <div className="worker-detail-row">
-                    <span>Max Concurrency</span>
-                    <strong>{w.max_concurrency ?? "—"}</strong>
-                  </div>
-                  <div className="worker-detail-row">
-                    <span>Active Executions</span>
+                    <span>{t("worker_detail.active_executions")}</span>
                     <strong>{w.current_execution_ids?.length ?? 0}</strong>
                   </div>
                   <div className="worker-detail-row">
-                    <span>Last Seen</span>
-                    <strong>{w.last_seen_at ? formatRelativeShort(w.last_seen_at, Date.now()) : "—"}</strong>
+                    <span>{t("worker_detail.last_seen")}</span>
+                    <strong>{w.last_seen_at ? formatRelativeShort(w.last_seen_at, Date.now(), t) : t("common.dash")}</strong>
                   </div>
                   {w.last_error ? (
                     <div className="worker-detail-row worker-detail-row-error">
-                      <span>Last Error</span>
+                      <span>{t("worker_detail.last_error")}</span>
                       <code>{w.last_error}</code>
                     </div>
                   ) : null}
-                  <div className="worker-detail-row">
-                    <span>Capabilities</span>
-                    <div className="worker-capabilities">
-                      {w.capabilities.map((c) => (
-                        <span key={c} className="worker-capability-chip">{c}</span>
-                      ))}
-                    </div>
-                  </div>
                   <div className="worker-detail-section">
-                    <p className="eyebrow">Adapter Config</p>
+                    <p className="eyebrow">{t("worker_detail.adapter_config")}</p>
                     <div className="worker-detail-config">
-                      {cfg.workspace_root ? (
-                        <div className="worker-detail-row">
-                          <span>workspace_root</span>
-                          <code>{cfg.workspace_root}</code>
-                        </div>
-                      ) : null}
                       {cfg.command ? (
                         <div className="worker-detail-row">
                           <span>command</span>
@@ -2850,12 +2968,6 @@ export function App() {
                         <div className="worker-detail-row">
                           <span>args</span>
                           <code>{cfg.args.join(" ")}</code>
-                        </div>
-                      ) : null}
-                      {cfg.endpoint ? (
-                        <div className="worker-detail-row">
-                          <span>endpoint</span>
-                          <code>{cfg.endpoint}</code>
                         </div>
                       ) : null}
                       {cfg.timeout_seconds !== undefined ? (
@@ -2880,27 +2992,26 @@ export function App() {
                 <div className="worker-detail-footer">
                   <button
                     type="button"
-                    className="ghost-button"
-                    onClick={() => {
-                      setSelectedWorkerId(null);
-                      void renameWorker(w.worker_id, w.name);
-                    }}
-                  >
-                    ✏️ 重命名
-                  </button>
-                  <button
-                    type="button"
                     className="ghost-button danger-button"
                     onClick={() => {
-                      setSelectedWorkerId(null);
+                      closeWorkerDetail();
                       void deleteWorker(w.worker_id, w.name);
                     }}
                   >
-                    🗑 删除 Worker
+                    🗑 {t("workers.detail.delete")}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={workerEditSubmitting}
+                    onClick={() => void saveWorkerEdit()}
+                  >
+                    {workerEditSubmitting ? t("workers.detail.saving") : t("workers.detail.save")}
                   </button>
                 </div>
               </div>
-            </div>
+            </div>,
+            document.body
           );
         })()}
 
@@ -2909,25 +3020,25 @@ export function App() {
             <div className="create-modal worker-create-modal" onClick={(event) => event.stopPropagation()}>
               <div className="panel-heading">
                 <div>
-                  <p className="eyebrow">New Worker</p>
-                  <h2>Add Worker</h2>
+                  <p className="eyebrow">{t("worker_create.eyebrow")}</p>
+                  <h2>{t("worker_create.title")}</h2>
                 </div>
-                <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>Close</button>
+                <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>{t("common.close")}</button>
               </div>
               <p className="bounded-copy">
-                Register a backend worker adapter. Dispatch, health, execution, and result collection will follow the backend adapter contract.
+                {t("worker_create.copy")}
               </p>
               <label className="field">
-                <span>Name</span>
+                <span>{t("workers.modal.field.name")}</span>
                 <input
                   value={workerDraft.name}
                   onChange={(event) => updateWorkerDraft("name", event.target.value)}
-                  placeholder="OpenCode"
+                  placeholder={t("worker_create.name_placeholder")}
                 />
               </label>
               <div className="worker-form-grid">
                 <label className="field">
-                  <span>Adapter</span>
+                  <span>{t("workers.modal.field.adapter")}</span>
                   <select
                     value={workerDraft.adapter_type}
                     onChange={(event) => updateWorkerDraft("adapter_type", event.target.value as AdapterType)}
@@ -2938,7 +3049,7 @@ export function App() {
                   </select>
                 </label>
                 <label className="field">
-                  <span>Runtime</span>
+                  <span>{t("workers.modal.field.runtime")}</span>
                   <select
                     value={workerDraft.runtime_type}
                     onChange={(event) => updateWorkerDraft("runtime_type", event.target.value as RuntimeType)}
@@ -2950,24 +3061,24 @@ export function App() {
                 </label>
               </div>
               <label className="field">
-                <span>Workspace Root</span>
+                <span>{t("workers.modal.field.workspace")}</span>
                 <input
                   value={workerDraft.workspace_root}
                   onChange={(event) => updateWorkerDraft("workspace_root", event.target.value)}
-                  placeholder={settingsDraft.workspace_root || settings.workspace_root || "/path/to/workspace"}
+                  placeholder={settingsDraft.workspace_root || settings.workspace_root || t("settings.general.workspace.placeholder")}
                 />
               </label>
               <label className="field">
-                <span>Capabilities</span>
+                <span>{t("workers.modal.field.capabilities")}</span>
                 <input
                   value={workerDraft.capabilities}
                   onChange={(event) => updateWorkerDraft("capabilities", event.target.value)}
-                  placeholder="code_generation, file_edit, command_execution"
+                  placeholder={t("worker_create.capabilities_placeholder")}
                 />
               </label>
               <div className="worker-form-grid">
                 <label className="field">
-                  <span>Max Concurrency</span>
+                  <span>{t("workers.modal.field.concurrency")}</span>
                   <input
                     type="number"
                     min="1"
@@ -2976,36 +3087,36 @@ export function App() {
                   />
                 </label>
                 <label className="field">
-                  <span>Endpoint</span>
+                  <span>{t("workers.modal.field.endpoint")}</span>
                   <input
                     value={workerDraft.endpoint}
                     onChange={(event) => updateWorkerDraft("endpoint", event.target.value)}
-                    placeholder="http/ws endpoint when used"
+                    placeholder={t("worker_create.endpoint_placeholder")}
                   />
                 </label>
               </div>
               {workerDraft.adapter_type === "codex" ? (
                 <div className="worker-form-grid">
                   <label className="field">
-                    <span>Command</span>
+                    <span>{t("workers.modal.field.command")}</span>
                     <input
                       value={workerDraft.command}
                       onChange={(event) => updateWorkerDraft("command", event.target.value)}
-                      placeholder="bash"
+                      placeholder={t("worker_create.command_placeholder")}
                     />
                   </label>
                   <label className="field">
-                    <span>Args</span>
+                    <span>{t("workers.modal.field.args")}</span>
                     <input
                       value={workerDraft.args}
                       onChange={(event) => updateWorkerDraft("args", event.target.value)}
-                      placeholder='["-lc", "codex ..."]'
+                      placeholder={t("worker_create.args_placeholder")}
                     />
                   </label>
                 </div>
               ) : null}
               <div className="modal-actions">
-                <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>Cancel</button>
+                <button className="ghost-button" onClick={() => setShowWorkerCreateModal(false)}>{t("common.cancel")}</button>
 	                <button
                     className="primary"
                     disabled={
@@ -3016,7 +3127,7 @@ export function App() {
                     }
                     onClick={() => void registerWorker()}
                   >
-	                  {workerSubmitting ? "Creating..." : "Create Worker"}
+	                  {workerSubmitting ? t("common.creating") : t("worker_create.submit")}
 	                </button>
               </div>
             </div>
@@ -3026,165 +3137,227 @@ export function App() {
         {tab === "Settings" && (
           <section className="content single settings-content">
             <div className="panel settings-panel">
-              <div className="settings-header">
-                <div>
-                  <h2>模型设置</h2>
-                  <p>填入你常用的大模型 API（默认接入 OpenAI 兼容协议）。Nodikt 会用它做需求澄清、计划生成、结果验证。</p>
-                </div>
-                <button className="primary" disabled={!settingsDirty || settingsSaving} onClick={saveSettings}>
-                  {settingsSaving ? "Saving..." : "Save Settings"}
+              <nav className="subtabs">
+                <button
+                  type="button"
+                  className={`subtab${settingsTab === "general" ? " is-active" : ""}`}
+                  onClick={() => setSettingsTab("general")}
+                >
+                  {t("settings.tab.general")}
                 </button>
-              </div>
-              {settingsStatus && <p>{settingsStatus}</p>}
+                <button
+                  type="button"
+                  className={`subtab${settingsTab === "brain" ? " is-active" : ""}`}
+                  onClick={() => setSettingsTab("brain")}
+                >
+                  {t("settings.tab.brain")}
+                </button>
+              </nav>
 
-              <label className="field">
-                <span>Workspace Root</span>
-                <input
-                  value={settingsDraft.workspace_root}
-                  onChange={(event) => updateWorkspaceRoot(event.target.value)}
-                />
-              </label>
+              {settingsStatus && <p className="settings-status">{settingsStatus}</p>}
 
-              <section className="workspace-grants-section">
-                <div className="workspace-grants-head">
-                  <h3>授权目录</h3>
-                  <small>除主工作目录外，worker 还能读写的路径。Demand 指定路径若在此清单或当前 demand 临时授权中，则免询问直接放行；否则弹窗请求授权。</small>
-                </div>
-                <div className="workspace-grants-list">
-                  {((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).length === 0 ? (
-                    <p className="workspace-grants-empty">还没有授权目录。提需求时若涉及外部路径会自动弹出授权请求；也可以在下方手动添加。</p>
-                  ) : (
-                    ((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).map((grant) => (
-                      <div key={grant.path} className="workspace-grant-row">
-                        <code>{grant.path}</code>
-                        <small className="workspace-grant-meta">
-                          {grant.granted_at ? `授权于 ${formatRelativeShort(grant.granted_at, Date.now())}` : ""}
-                        </small>
-                        <button
-                          type="button"
-                          className="workspace-grant-remove"
-                          title="移除授权"
-                          onClick={() => removeWorkspaceGrant(grant.path)}
-                        >
-                          🗑
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-                <div className="workspace-grants-add">
-                  <input
-                    type="text"
-                    placeholder="/path/to/extra/directory"
-                    value={newGrantInput}
-                    onChange={(event) => setNewGrantInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && newGrantInput.trim()) {
-                        addWorkspaceGrant(newGrantInput);
-                        setNewGrantInput("");
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    disabled={!newGrantInput.trim()}
-                    onClick={() => {
-                      addWorkspaceGrant(newGrantInput);
-                      setNewGrantInput("");
-                    }}
-                  >
-                    + 添加
-                  </button>
-                </div>
-              </section>
+              {settingsTab === "general" && (
+                <>
+                  <section className="settings-section">
+                    <div className="settings-section-head">
+                      <h3>{t("settings.general.workspace.title")}</h3>
+                      <small>{t("settings.general.workspace.desc")}</small>
+                    </div>
+                    <label className="field">
+                      <input
+                        value={settingsDraft.workspace_root}
+                        onChange={(event) => updateWorkspaceRoot(event.target.value)}
+                        placeholder={t("settings.general.workspace.placeholder")}
+                      />
+                    </label>
+                  </section>
 
-              <div className="settings-grid">
-                {(Object.keys(settingsDraft.models) as Array<keyof Settings["models"]>).map((role) => {
-                  const model = settingsDraft.models[role];
-                  return (
-                    <section key={role} className="settings-card">
-                      <div className="settings-card-header">
-                        <h3>{role}</h3>
-                        {/* Enable toggle 按 review 反馈移除：模型卡只要存在就视为启用，
-                            后端 model.enabled 默认 true；要禁用直接清空 api_key 或换模型。 */}
-                      </div>
+                  <section className="settings-section workspace-grants-section">
+                    <div className="settings-section-head">
+                      <h3>{t("settings.general.grants.title")}</h3>
+                      <small>{t("settings.general.grants.desc")}</small>
+                    </div>
+                    <div className="workspace-grants-list">
+                      {((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).length === 0 ? (
+                        <p className="workspace-grants-empty">{t("settings.general.grants.empty")}</p>
+                      ) : (
+                        ((settingsDraft.workspace_grants ?? []) as Array<{ path: string; granted_at: string }>).map((grant) => (
+                          <div key={grant.path} className="workspace-grant-row">
+                            <code>{grant.path}</code>
+                            <small className="workspace-grant-meta">
+                              {grant.granted_at ? t("settings.general.grants.added_at", { ago: formatRelativeShort(grant.granted_at, Date.now(), t) }) : ""}
+                            </small>
+                            <button
+                              type="button"
+                              className="workspace-grant-remove"
+                              title={t("settings.general.grants.remove_title")}
+                              onClick={() => removeWorkspaceGrant(grant.path)}
+                            >
+                              🗑
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="workspace-grants-add">
+                      <input
+                        type="text"
+                        placeholder={t("settings.general.grants.placeholder")}
+                        value={newGrantInput}
+                        onChange={(event) => setNewGrantInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && newGrantInput.trim()) {
+                            addWorkspaceGrant(newGrantInput);
+                            setNewGrantInput("");
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={!newGrantInput.trim()}
+                        onClick={() => {
+                          addWorkspaceGrant(newGrantInput);
+                          setNewGrantInput("");
+                        }}
+                      >
+                        {t("settings.general.grants.add")}
+                      </button>
+                    </div>
+                  </section>
 
+                  <section className="settings-section">
+                    <div className="settings-section-head">
+                      <h3>{t("settings.general.language.title")}</h3>
+                      <small>{t("settings.general.language.desc")}</small>
+                    </div>
+                    <div className="language-segmented">
+                      <button
+                        type="button"
+                        className={`language-option${language === "en" ? " is-active" : ""}`}
+                        onClick={() => setLanguage("en")}
+                      >
+                        {t("settings.general.language.en")}
+                      </button>
+                      <button
+                        type="button"
+                        className={`language-option${language === "zh" ? " is-active" : ""}`}
+                        onClick={() => setLanguage("zh")}
+                      >
+                        {t("settings.general.language.zh")}
+                      </button>
+                    </div>
+                  </section>
+
+                  <div className="settings-footer">
+                    <button className="primary" disabled={!settingsDirty || settingsSaving} onClick={saveSettings}>
+                      {settingsSaving ? t("common.sending") : t("settings.save_button")}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {settingsTab === "brain" && (
+                <>
+                  <section className="settings-section">
+                    <div className="settings-section-head">
+                      <h3>{t("settings.brain.title")}</h3>
+                      <small>{t("settings.brain.desc")}</small>
+                    </div>
+                  </section>
+
+                  <div className="settings-grid">
+                    {(Object.keys(settingsDraft.models) as Array<keyof Settings["models"]>).map((role) => {
+                      const model = settingsDraft.models[role];
+                      return (
+                        <section key={role} className="settings-card">
+                          <div className="settings-card-header">
+                            <h3>{t(`settings.brain.role.${role}`)}</h3>
+                          </div>
+
+                          <label className="field">
+                            <span>{t("settings.brain.field.provider")}</span>
+                            <input
+                              value={model.provider}
+                              onChange={(event) => updateModel(role, "provider", event.target.value)}
+                              placeholder={t("settings.brain.field.provider.placeholder")}
+                            />
+                          </label>
+
+                          <label className="field">
+                            <span>{t("settings.brain.field.model")}</span>
+                            <input
+                              value={model.model}
+                              onChange={(event) => updateModel(role, "model", event.target.value)}
+                              placeholder={t("settings.brain.field.model.placeholder")}
+                            />
+                          </label>
+
+                          <label className="field">
+                            <span>{t("settings.brain.field.base_url")}</span>
+                            <input
+                              value={model.base_url}
+                              onChange={(event) => updateModel(role, "base_url", event.target.value)}
+                              placeholder={t("settings.brain.field.base_url.placeholder")}
+                            />
+                          </label>
+
+                          <label className="field">
+                            <span>{t("settings.brain.field.api_key")}</span>
+                            <input
+                              type="password"
+                              value={model.api_key}
+                              onChange={(event) => updateModel(role, "api_key", event.target.value)}
+                              placeholder={t("settings.brain.field.api_key.placeholder")}
+                            />
+                          </label>
+                        </section>
+                      );
+                    })}
+                  </div>
+
+                  <div className="settings-grid">
+                    <section className="settings-card">
+                      <h3>{t("settings.brain.runtime.title")}</h3>
                       <label className="field">
-                        <span>Provider</span>
+                        <span>{t("settings.brain.runtime.heartbeat")}</span>
                         <input
-                          value={model.provider}
-                          onChange={(event) => updateModel(role, "provider", event.target.value)}
-                          placeholder="openai-compatible / anthropic / uniapi"
+                          type="number"
+                          value={settingsDraft.runtime.heartbeat_interval_seconds}
+                          onChange={(event) => updateRuntime("heartbeat_interval_seconds", Number(event.target.value))}
                         />
                       </label>
-
                       <label className="field">
-                        <span>Model</span>
+                        <span>{t("settings.brain.runtime.timeout")}</span>
                         <input
-                          value={model.model}
-                          onChange={(event) => updateModel(role, "model", event.target.value)}
-                          placeholder="gpt-4o-mini / claude / qwen"
+                          type="number"
+                          value={settingsDraft.runtime.execution_timeout_seconds}
+                          onChange={(event) => updateRuntime("execution_timeout_seconds", Number(event.target.value))}
                         />
                       </label>
-
                       <label className="field">
-                        <span>Base URL</span>
+                        <span>{t("settings.brain.runtime.retry")}</span>
                         <input
-                          value={model.base_url}
-                          onChange={(event) => updateModel(role, "base_url", event.target.value)}
-                          placeholder="https://api.openai.com/v1"
-                        />
-                      </label>
-
-                      <label className="field">
-                        <span>API Key</span>
-                        <input
-                          type="password"
-                          value={model.api_key}
-                          onChange={(event) => updateModel(role, "api_key", event.target.value)}
-                          placeholder="sk-..."
+                          type="number"
+                          value={settingsDraft.runtime.max_retry_count}
+                          onChange={(event) => updateRuntime("max_retry_count", Number(event.target.value))}
                         />
                       </label>
                     </section>
-                  );
-                })}
-              </div>
 
-              <div className="settings-grid">
-                <section className="settings-card">
-                  <h3>Runtime</h3>
-                  <label className="field">
-                    <span>Heartbeat Seconds</span>
-                    <input
-                      type="number"
-                      value={settingsDraft.runtime.heartbeat_interval_seconds}
-                      onChange={(event) => updateRuntime("heartbeat_interval_seconds", Number(event.target.value))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Execution Timeout Seconds</span>
-                    <input
-                      type="number"
-                      value={settingsDraft.runtime.execution_timeout_seconds}
-                      onChange={(event) => updateRuntime("execution_timeout_seconds", Number(event.target.value))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Max Retry Count</span>
-                    <input
-                      type="number"
-                      value={settingsDraft.runtime.max_retry_count}
-                      onChange={(event) => updateRuntime("max_retry_count", Number(event.target.value))}
-                    />
-                  </label>
-                </section>
+                    <section className="settings-card">
+                      <h3>{t("settings.brain.snapshot.title")}</h3>
+                      <pre>{JSON.stringify(settings, null, 2)}</pre>
+                    </section>
+                  </div>
 
-                <section className="settings-card">
-                  <h3>Current Snapshot</h3>
-                  <pre>{JSON.stringify(settings, null, 2)}</pre>
-                </section>
-              </div>
+                  <div className="settings-footer">
+                    <button className="primary" disabled={!settingsDirty || settingsSaving} onClick={saveSettings}>
+                      {settingsSaving ? t("common.sending") : t("settings.save_button")}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </section>
         )}

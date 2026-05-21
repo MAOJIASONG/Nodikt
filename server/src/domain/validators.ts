@@ -197,29 +197,25 @@ export const settingsSchema = z.object({
       provider: z.string(),
       model: z.string(),
       base_url: z.string(),
-      api_key: z.string(),
-      enabled: z.boolean()
+      api_key: z.string()
     }),
     planner: z.object({
       provider: z.string(),
       model: z.string(),
       base_url: z.string(),
-      api_key: z.string(),
-      enabled: z.boolean()
+      api_key: z.string()
     }),
     verifier: z.object({
       provider: z.string(),
       model: z.string(),
       base_url: z.string(),
-      api_key: z.string(),
-      enabled: z.boolean()
+      api_key: z.string()
     }),
     ops_backup: z.object({
       provider: z.string(),
       model: z.string(),
       base_url: z.string(),
-      api_key: z.string(),
-      enabled: z.boolean()
+      api_key: z.string()
     })
   }),
   workspace_root: z.string().min(1),

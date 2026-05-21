@@ -264,7 +264,6 @@ export interface ModelConfig {
   model: string;
   base_url: string;
   api_key: string;
-  enabled: boolean;
 }
 
 export interface SkillRef {

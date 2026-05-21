@@ -127,6 +127,27 @@ button {
   text-transform: uppercase;
 }
 
+/* 把 .brand 升级成可点击按钮（点 logo 回首页）：去掉 button 默认样式，hover 时主色块淡淡发光提示可点。 */
+.brand-button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  transition: opacity 120ms ease;
+}
+
+.brand-button:hover .brand-mark {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+}
+
+.brand-button:hover .brand-name {
+  opacity: 0.88;
+}
+
 .brand-mark {
   width: 14px;
   height: 14px;
@@ -713,10 +734,40 @@ small,
 .worker-detail-footer {
   display: flex;
   gap: 8px;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid rgba(80, 80, 80, 0.4);
+}
+
+/* Worker Detail 中的编辑表单字段：让 input/select 的栅格和只读 worker-detail-row 保持一致 */
+.worker-detail-field {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 0;
+}
+
+.worker-detail-field > span {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(220, 220, 220, 0.65);
+  margin: 0;
+}
+
+.worker-detail-field > input,
+.worker-detail-field > select {
+  width: 100%;
+  background: rgba(20, 20, 20, 0.7);
+  border: 1px solid rgba(80, 80, 80, 0.45);
+  color: inherit;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
 }
 
 /* worker 卡片上的编辑 / 删除按钮 —— 默认低存在感，hover 显眼 */
@@ -1958,6 +2009,111 @@ textarea {
   flex-direction: column;
   gap: 18px;
   min-height: max-content;
+}
+
+.subtabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+.subtab {
+  position: relative;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  transition: color 0.18s ease;
+}
+
+.subtab:hover,
+.subtab.is-active {
+  color: var(--white);
+}
+
+.subtab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--white);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-section:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
+
+.settings-section-head small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.settings-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.language-segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  align-self: flex-start;
+}
+
+.language-option {
+  padding: 8px 18px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.language-option:not(:last-child) {
+  border-right: 1px solid var(--line-strong);
+}
+
+.language-option:hover {
+  color: var(--white);
+}
+
+.language-option.is-active {
+  background: var(--white);
+  color: #000;
 }
 
 .settings-grid {

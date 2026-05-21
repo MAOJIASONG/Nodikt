@@ -25,27 +25,17 @@ export class LlmClient {
   constructor(private readonly timeoutMs: number = 60000) {}
 
   /**
-   * 函数作用：按角色选择可用模型配置。
+   * 函数作用：按角色选择模型配置。
    *
    * 参数说明：
    * - settings：系统设置。
    * - role：模型角色，如 primary、planner、verifier 或 ops_backup。
    *
    * 返回值：
-   * - ModelConfig：可用的模型配置。
-   *
-   * 注意事项：
-   * - 指定角色禁用时会尝试回退到 primary，全部不可用时抛出错误。
+   * - ModelConfig：对应角色的模型配置。
    */
   getConfig(settings: Settings, role: "primary" | "planner" | "verifier" | "ops_backup"): ModelConfig {
-    const preferred = settings.models[role];
-    if (preferred.enabled) {
-      return preferred;
-    }
-    if (settings.models.primary.enabled) {
-      return settings.models.primary;
-    }
-    throw new LlmInvocationError(`LLM config for ${role} is disabled and primary fallback is also disabled`);
+    return settings.models[role];
   }
 
   /**
@@ -113,9 +103,6 @@ export class LlmClient {
   }
 
   private validateConfig(config: ModelConfig): void {
-    if (!config.enabled) {
-      throw new LlmInvocationError("Selected LLM config is disabled");
-    }
     if (!config.base_url.trim()) {
       throw new LlmInvocationError("LLM base_url is empty");
     }
@@ -155,7 +142,9 @@ export class LlmClient {
       );
     } catch (error) {
       const message = String((error as Error).message ?? "");
-      if (!/response_format|json_object|unsupported|invalid/i.test(message)) {
+      // 上游有时只回 422 / 400 + 空 body（不带"json_object"/"unsupported"等关键字），
+      // 例如 uni-api.cstcloud.cn 的 gpt-oss 网关。这种情况也按"不支持 response_format"降级重试。
+      if (!/response_format|json_object|unsupported|invalid|status (400|422)/i.test(message)) {
         throw error;
       }
 
@@ -271,7 +260,8 @@ export class LlmClient {
     } catch (error) {
       const message = String((error as Error).message ?? "");
       // 不支持 text.format / json_object 的网关：去掉格式约束重试。
-      if (!/text\.format|json_object|unsupported|invalid|response_format/i.test(message)) {
+      // 部分网关只回 422 / 400 + 空 body（不带关键字），同样按"不支持"处理。
+      if (!/text\.format|json_object|unsupported|invalid|response_format|status (400|422)/i.test(message)) {
         throw error;
       }
       response = await this.postJson(
