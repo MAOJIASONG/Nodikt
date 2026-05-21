@@ -364,6 +364,65 @@ export function createApiRouter(
     }
   });
 
+  // PATCH /workers/:id —— 仅允许改 name / max_concurrency / capabilities，
+  // adapter_type / config 不允许 hot-swap（涉及 adapter 重新 register）。
+  router.patch("/workers/:id", async (req, res, next) => {
+    try {
+      const existing = await repositories.workers.getById(req.params.id);
+      if (!existing) {
+        res.status(404).json({ error: "Worker not found" });
+        return;
+      }
+      const patched = { ...existing };
+      if (typeof req.body.name === "string" && req.body.name.trim().length > 0) {
+        patched.name = req.body.name.trim();
+      }
+      if (req.body.max_concurrency !== undefined) {
+        const n = Number(req.body.max_concurrency);
+        if (Number.isFinite(n) && n >= 1) {
+          patched.max_concurrency = Math.floor(n);
+        }
+      }
+      if (Array.isArray(req.body.capabilities)) {
+        patched.capabilities = req.body.capabilities.map(String);
+      }
+      patched.updated_at = nowIso();
+      await repositories.workers.upsert(patched);
+      res.json(patched);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // DELETE /workers/:id —— 删除前检查是否有活跃 execution 占着；
+  // 同步从 adapterRegistry 移除，避免 dispatcher 把任务派给一个已经"消失"的 worker。
+  router.delete("/workers/:id", async (req, res, next) => {
+    try {
+      const worker = await repositories.workers.getById(req.params.id);
+      if (!worker) {
+        res.status(404).json({ error: "Worker not found" });
+        return;
+      }
+      const activeStates = new Set(["QUEUED", "RUNNING", "WAITING_RESULT", "VERIFYING"]);
+      const allExecutions = await repositories.executions.list();
+      const blocking = allExecutions.filter(
+        (exec) => exec.worker_id === worker.worker_id && activeStates.has(String(exec.state))
+      );
+      if (blocking.length > 0) {
+        res.status(409).json({
+          error: "Worker has active executions; cancel them first",
+          execution_ids: blocking.map((e) => e.execution_id)
+        });
+        return;
+      }
+      await repositories.workers.delete(worker.worker_id);
+      adapterRegistry.unregisterAdapter(worker.worker_id);
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/workers/register", async (req, res, next) => {
     try {
       const timestamp = nowIso();

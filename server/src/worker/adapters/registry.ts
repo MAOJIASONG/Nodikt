@@ -96,4 +96,22 @@ export class AdapterRegistry {
   getWorker(workerId: string): WorkerRegistration | undefined {
     return this.workers.get(workerId);
   }
+
+  /**
+   * 函数作用：从注册表里移除工作器及其绑定的执行映射。供 DELETE /workers/:id 用。
+   *
+   * 注意事项：
+   * - 调用方需确认该 worker 上没有活跃 execution，否则会泄露 executionAdapter 条目。
+   */
+  unregisterAdapter(workerId: string): void {
+    this.adapters.delete(workerId);
+    this.workers.delete(workerId);
+    // 顺手清掉绑过这个 worker 的所有 execution 映射（被删 worker 上的旧 exec 都没意义了）。
+    for (const [executionId, adapter] of this.executionAdapter.entries()) {
+      const reg = this.workers.get(workerId);
+      if (reg === undefined && adapter === this.adapters.get(workerId)) {
+        this.executionAdapter.delete(executionId);
+      }
+    }
+  }
 }

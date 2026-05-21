@@ -1,5 +1,5 @@
 export type AutonomyLevel = "L0" | "L1" | "L2" | "L3" | "L4";
-export type AdapterType = "codex" | "opencode";
+export type AdapterType = "codex" | "claude_code" | "opencode";
 export type RuntimeType = "local_command" | "http" | "websocket";
 export type ArtifactType = "git_commit" | "pull_request" | "file_bundle" | "structured_output_json";
 export type ArtifactBackend = "git" | "filesystem";
@@ -154,6 +154,9 @@ export type Execution = {
   worker_id: string;
   state: string;
   attempt?: number;
+  started_at: string | null;
+  completed_at: string | null;
+  last_heartbeat_at: string | null;
   latest_worker_status: string | null;
   result_status: string | null;
   claimed_outcome: string | null;

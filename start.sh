@@ -43,7 +43,27 @@ warn() { printf "%s%s%s\n" "$C_YELLOW" "$1" "$C_RESET"; }
 err()  { printf "%s%s%s\n" "$C_RED" "$1" "$C_RESET" >&2; }
 dim()  { printf "%s%s%s\n" "$C_DIM" "$1" "$C_RESET"; }
 
-port_pids() { lsof -ti tcp:"$1" 2>/dev/null || true; }
+# 端口 → PID 列表（去重换行分隔）。轮流试 lsof / fuser / ss / netstat，谁先成功用谁的输出。
+# 容器环境经常缺 lsof，必须兜底，否则端口检测会"静默成功"放出 EADDRINUSE。
+port_pids() {
+  local port="$1" pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+  fi
+  if [[ -z "$pids" ]] && command -v fuser >/dev/null 2>&1; then
+    # fuser 把 PID 写到 stdout（旧版本可能写 stderr），结果含前导空格 / 制表符
+    pids=$(fuser "${port}"/tcp 2>/dev/null | tr -s '[:space:]' '\n' | grep -E '^[0-9]+$' || true)
+  fi
+  if [[ -z "$pids" ]] && command -v ss >/dev/null 2>&1; then
+    pids=$(ss -tlnpH 2>/dev/null | awk -v p=":$port" '$4 ~ p {print $NF}' \
+      | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
+  fi
+  if [[ -z "$pids" ]] && command -v netstat >/dev/null 2>&1; then
+    pids=$(netstat -tlnp 2>/dev/null | awk -v p=":$port" '$4 ~ p {print $NF}' \
+      | cut -d/ -f1 | grep -E '^[0-9]+$' | sort -u || true)
+  fi
+  printf "%s" "$pids"
+}
 
 stop_running() {
   local stopped=0

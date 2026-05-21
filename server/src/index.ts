@@ -24,6 +24,14 @@ const CLAUDE_CODE_ALLOWED_TOOLS =
   process.env.CLAUDE_CODE_ALLOWED_TOOLS ?? "";
 const CLAUDE_CODE_DISALLOWED_TOOLS =
   process.env.CLAUDE_CODE_DISALLOWED_TOOLS ?? "";
+
+// Codex CLI 安装根 + 运行时 HOME（与 claude/opencode 同款约定）
+const CODEX_INSTALL_ROOT =
+  process.env.CODEX_INSTALL_ROOT ?? "";
+const CODEX_RUNTIME_HOME =
+  process.env.CODEX_RUNTIME_HOME
+  || path.resolve(process.cwd(), ".codex-runtime");
+
 const DEFAULT_WORKSPACE_ROOT =
   process.env.NODIKT_WORKSPACE_ROOT
   || path.resolve(process.cwd(), "workspace");
@@ -96,6 +104,43 @@ function buildDefaultOpencodeWorker(timestamp: string): WorkerRegistration {
   };
 }
 
+function buildCodexEnv(): Record<string, string> {
+  return {
+    HOME: CODEX_RUNTIME_HOME,
+    PATH: CODEX_INSTALL_ROOT.length > 0
+      ? `${path.join(CODEX_INSTALL_ROOT, "bin")}:${process.env.PATH ?? ""}`
+      : process.env.PATH ?? ""
+  };
+}
+
+function buildDefaultCodexWorker(timestamp: string): WorkerRegistration {
+  return {
+    worker_id: "worker_codex_local",
+    name: "Codex Local",
+    adapter_type: "codex",
+    runtime_type: "local_command",
+    status: WorkerRegistryStatus.IDLE,
+    max_concurrency: 3,
+    capabilities: ["code_generation", "file_edit", "command_execution"],
+    available_skills: [],
+    install_policy: "allowed_with_review",
+    config: {
+      workspace_root: DEFAULT_WORKSPACE_ROOT,
+      command: CODEX_INSTALL_ROOT.length > 0
+        ? path.join(CODEX_INSTALL_ROOT, "bin", "codex")
+        : "codex",
+      args: [],
+      env: buildCodexEnv()
+    },
+    current_execution_ids: [],
+    last_seen_at: null,
+    last_error: null,
+    is_enabled: true,
+    created_at: timestamp,
+    updated_at: timestamp
+  };
+}
+
 function buildDefaultClaudeCodeWorker(timestamp: string): WorkerRegistration {
   return {
     worker_id: "worker_claude_code_local",
@@ -138,6 +183,19 @@ function normalizeWorkerConfig(worker: WorkerRegistration): WorkerRegistration {
       }
     };
   }
+  if (worker.adapter_type === "codex") {
+    return {
+      ...worker,
+      config: {
+        ...worker.config,
+        workspace_root: DEFAULT_WORKSPACE_ROOT,
+        env: {
+          ...buildCodexEnv(),
+          ...(worker.config.env ?? {})
+        }
+      }
+    };
+  }
   return {
     ...worker,
     config: {
@@ -172,15 +230,13 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
   }
 
   // Legacy cleanup: remove deprecated worker rows before reconciling.
-  // - worker_codex_local: codex adapter retired
-  // - worker_opencode_local: opencode CLI not installed in this environment; keep claude_code only.
-  //   Re-enable by restoring the default registration below + ensuring OPENCODE_INSTALL_ROOT points
-  //   to a real install.
-  await repositories.workers.delete("worker_codex_local");
+  // - worker_opencode_local: opencode CLI 在本机大概率没装；保持下线。要恢复就把它从下面的
+  //   RETIRED_* 列表里去掉 + 确认 OPENCODE_INSTALL_ROOT 指到真实安装。
+  // - codex 已经恢复为默认 worker（review 反馈："只留 claude 和 codex"）。
   await repositories.workers.delete("worker_opencode_local");
 
-  const RETIRED_WORKER_IDS = new Set(["worker_codex_local", "worker_opencode_local"]);
-  const RETIRED_ADAPTER_TYPES = new Set(["codex", "opencode"]);
+  const RETIRED_WORKER_IDS = new Set(["worker_opencode_local"]);
+  const RETIRED_ADAPTER_TYPES = new Set(["opencode"]);
 
   const executions = await repositories.executions.list();
   const existing = (await repositories.workers.list()).filter(
@@ -213,6 +269,9 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
   const timestamp = nowIso();
   if (!seenAdapterTypes.has("claude_code")) {
     await registerWorker(appContext, buildDefaultClaudeCodeWorker(timestamp), adapters.claudeCodeAdapter);
+  }
+  if (!seenAdapterTypes.has("codex")) {
+    await registerWorker(appContext, buildDefaultCodexWorker(timestamp), adapters.codexAdapter);
   }
 }
 

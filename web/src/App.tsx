@@ -10,6 +10,7 @@ import type {
   DecisionAction,
   Demand,
   DemandDetail,
+  DemandEvent,
   Execution,
   ModelConfig,
   RuntimeType,
@@ -60,10 +61,10 @@ const EMPTY_SETTINGS: Settings = {
 };
 
 const DEFAULT_WORKER_DRAFT: WorkerDraft = {
-  name: "OpenCode",
-  adapter_type: "opencode",
+  name: "Claude Code",
+  adapter_type: "claude_code",
   runtime_type: "local_command",
-  max_concurrency: 1,
+  max_concurrency: 4,
   capabilities: "code_generation, file_edit, command_execution",
   workspace_root: "",
   command: "",
@@ -71,12 +72,254 @@ const DEFAULT_WORKER_DRAFT: WorkerDraft = {
   endpoint: ""
 };
 
+// ---------- 执行进度相关 helpers / 组件 -----------------------------------------
+//
+// 痛点：subgoal 派给 worker 后可能跑 1-10 分钟，期间页面所有静态信息都不变，用户体感"卡死"。
+// 这一段做的事：(1) 每秒自增的时间钩子，(2) 已运行/相对时间格式化，(3) 一个 RunningProgress 卡，
+// 在 subgoal stage === "running" 时贴在卡片下方，展示动态时间、心跳新鲜度、tool trace 进度。
+
+/** 每秒触发一次 re-render 的 hook，返回当前 Date.now() (ms)。仅在 enabled 时启动 setInterval。 */
+function useTickingClock(enabled: boolean, intervalMs = 1000): number {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [enabled, intervalMs]);
+  return now;
+}
+
+function formatElapsedShort(elapsedMs: number): string {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return "刚开始";
+  const sec = Math.floor(elapsedMs / 1000);
+  if (sec < 60) return `${sec} 秒`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  if (min < 60) return `${min} 分 ${rem.toString().padStart(2, "0")} 秒`;
+  const hr = Math.floor(min / 60);
+  return `${hr} 时 ${(min % 60).toString().padStart(2, "0")} 分`;
+}
+
+function formatRelativeShort(fromIso: string | null | undefined, nowMs: number): string {
+  if (!fromIso) return "—";
+  const t = new Date(fromIso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diff = Math.max(0, nowMs - t);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 5) return "刚刚";
+  if (sec < 60) return `${sec} 秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  return `${Math.floor(hr / 24)} 天前`;
+}
+
+/**
+ * 把后端 EventType 枚举翻译成自然语言，给 Recent Events 时间线展示。
+ * 返回 { label, tone }：label 是要给客户看的中文句子，tone 用于决定卡片样式色。
+ * 缺省 fallback 是原 event_type 字符串 + neutral —— 避免 enum 新增时前端崩。
+ */
+function humanizeEvent(event: DemandEvent): { label: string; tone: "neutral" | "info" | "success" | "warning" | "danger" } {
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  switch (event.event_type) {
+    case "USER_INPUT_RECEIVED": {
+      const kind = typeof payload.input_kind === "string" ? payload.input_kind : "";
+      if (kind === "recon_findings") return { label: "已收到调研结果，继续推进澄清", tone: "info" };
+      if (kind === "clarification_reply") return { label: "已收到你的澄清回复", tone: "info" };
+      return { label: "已收到你的需求输入", tone: "info" };
+    }
+    case "DEMAND_CREATED":
+      return { label: "已创建需求", tone: "info" };
+    case "DEMAND_CLARIFICATION_COMPLETED":
+      return { label: "需求澄清完成，进入规划阶段", tone: "success" };
+    case "PLAN_GENERATED":
+      return { label: "已生成执行计划", tone: "success" };
+    case "SUBGOAL_CREATED":
+      return { label: "已创建子目标", tone: "info" };
+    case "SUBGOAL_MARKED_READY":
+      return { label: "子目标已就绪，准备派发", tone: "info" };
+    case "EXECUTION_CREATED":
+      return { label: "已为子目标创建执行", tone: "info" };
+    case "EXECUTION_DISPATCHED":
+      return { label: "已派发到 worker", tone: "info" };
+    case "WORKER_RESULT_RECEIVED": {
+      const wr = payload.worker_result as { worker_status?: string | null } | undefined;
+      const status = wr?.worker_status ?? "";
+      if (status === "DONE") return { label: "Worker 已完成", tone: "success" };
+      if (status === "FAILED") return { label: "Worker 报告失败", tone: "danger" };
+      if (status === "NEED_HELP" || status === "BLOCKED") return { label: "Worker 需要进一步指示", tone: "warning" };
+      return { label: "已收到 worker 结果", tone: "info" };
+    }
+    case "VERIFICATION_COMPLETED": {
+      const vr = payload.verification_result as { verified_status?: string } | undefined;
+      const status = vr?.verified_status ?? typeof payload.verification_status === "string" ? payload.verification_status : "";
+      if (status === "VERIFIED_DONE") return { label: "验证通过", tone: "success" };
+      if (status === "PARTIAL") return { label: "部分验证通过，继续推进", tone: "info" };
+      if (status === "FAILED") return { label: "验证未通过", tone: "danger" };
+      if (status === "UNVERIFIABLE") return { label: "无法验证结果", tone: "warning" };
+      return { label: "验证已完成", tone: "info" };
+    }
+    case "RECONCILIATION_COMPLETED": {
+      const replan = Boolean(payload.replan_requested);
+      const mission = Boolean(payload.mission_completed);
+      if (mission) return { label: "整体任务完成", tone: "success" };
+      if (replan) return { label: "完成结果归并，准备重新规划", tone: "info" };
+      return { label: "已归并执行结果", tone: "info" };
+    }
+    case "SUBGOAL_RETRY_REQUESTED":
+      return { label: "正在自动重试此子目标", tone: "warning" };
+    case "DECISION_REQUEST_CREATED": {
+      const dr = payload.decision_request as { reason_code?: string } | undefined;
+      const reason = dr?.reason_code ?? "";
+      if (reason === "PLAN_REVIEW") return { label: "等待你审核新的执行计划", tone: "warning" };
+      if (reason === "PATH_GRANT_REQUIRED") return { label: "等待你授权输出目录", tone: "warning" };
+      if (reason === "OPS_ALERT") return { label: "运维异常，等待你处理", tone: "danger" };
+      if (reason === "UNVERIFIABLE_RESULT") return { label: "结果无法验证，等待你裁决", tone: "warning" };
+      if (reason === "BLOCKED") return { label: "执行受阻，等待你裁决", tone: "warning" };
+      return { label: "需要你做一个决策", tone: "warning" };
+    }
+    case "DECISION_RESPONSE_RECEIVED": {
+      const dr = payload.decision_response as { action?: string } | undefined;
+      const action = dr?.action ?? "";
+      if (action === "Approve") return { label: "你已批准，继续推进", tone: "success" };
+      if (action === "Reject") return { label: "你已拒绝", tone: "danger" };
+      if (action === "ProvideInfo") return { label: "你已补充信息", tone: "info" };
+      if (action === "CancelDemand") return { label: "已取消此需求", tone: "danger" };
+      return { label: "已收到你的回复", tone: "info" };
+    }
+    case "REPLAN_REQUESTED":
+      return { label: "正在根据反馈调整计划", tone: "info" };
+    case "DEMAND_PAUSED":
+      return { label: "需求已暂停", tone: "warning" };
+    case "DEMAND_RESUMED":
+      return { label: "需求已恢复", tone: "info" };
+    case "DEMAND_CANCELLED":
+      return { label: "需求已取消", tone: "danger" };
+    case "EXECUTION_STOP_REQUESTED":
+      return { label: "正在中断当前执行", tone: "warning" };
+    case "EXECUTION_TIMEOUT_DETECTED":
+      return { label: "执行超时", tone: "warning" };
+    case "WORKER_HEALTH_CHECKED": {
+      const ok = Boolean(payload.ok);
+      return ok
+        ? { label: "Worker 健康检查通过", tone: "neutral" }
+        : { label: "Worker 健康检查失败", tone: "warning" };
+    }
+    case "OPS_RECOVERY_ATTEMPTED":
+      return { label: "已尝试自动恢复", tone: "info" };
+    case "OPS_RECOVERY_FAILED":
+      return { label: "自动恢复失败", tone: "danger" };
+    case "OPS_ALERT":
+      return { label: "运维告警", tone: "warning" };
+    case "MISSION_COMPLETED":
+      return { label: "整体任务完成", tone: "success" };
+    default:
+      return { label: event.event_type, tone: "neutral" };
+  }
+}
+
+/** 从 adapter_meta 里抽取 worker 当前粗粒度进度（已完成工具调用步数 + 最后一步描述）。 */
+function extractToolProgress(execution: Execution): { steps: number; lastAction: string | null } {
+  const meta = execution.adapter_meta as Record<string, unknown> | undefined;
+  if (!meta) return { steps: 0, lastAction: null };
+  const traces = meta.claude_tool_traces;
+  if (!Array.isArray(traces) || traces.length === 0) return { steps: 0, lastAction: null };
+  const last = traces[traces.length - 1] as Record<string, unknown> | undefined;
+  let lastAction: string | null = null;
+  if (last && typeof last === "object") {
+    const name = typeof last.name === "string" ? last.name : "";
+    const input = typeof last.input_preview === "string" ? last.input_preview : "";
+    // 取 input 前 60 字符，避免决策卡膨胀
+    const briefInput = input.length > 0 ? input.replace(/\s+/g, " ").slice(0, 60) : "";
+    if (name && briefInput) {
+      lastAction = `${name}(${briefInput}${input.length > 60 ? "…" : ""})`;
+    } else if (name) {
+      lastAction = name;
+    }
+  }
+  return { steps: traces.length, lastAction };
+}
+
+/**
+ * 执行中状态的进度条：跑了多久、心跳新鲜度、已完成工具步数、当前在做什么。
+ * 仅在 stage === "running"（EXECUTING / DISPATCHED / VERIFYING / RUNNING / QUEUED）时挂载。
+ *
+ * execution 允许为 null —— subgoal.state 推进得比 execution row 写入快时会有短暂窗口
+ * 拿不到 execution；这时仍渲染一个 "排队中…" 的占位卡，让用户至少看见这块区域。
+ */
+function RunningProgress({ execution }: { execution: Execution | null }) {
+  const now = useTickingClock(true, 1000);
+
+  // execution=null 的早期窗口：subgoal 显示 running 但 execution row 还没出现
+  if (!execution) {
+    return (
+      <div className="running-progress running-progress-queued">
+        <div className="running-progress-row">
+          <span className="running-progress-pulse" aria-hidden="true" />
+          <span className="running-progress-label">排队中…</span>
+          <span className="running-progress-elapsed">worker 即将接管</span>
+        </div>
+        <div className="running-progress-meta">
+          <span>等待派发到 worker</span>
+        </div>
+      </div>
+    );
+  }
+
+  const startedMs = execution.started_at ? new Date(execution.started_at).getTime() : null;
+  const elapsed = startedMs ? Math.max(0, now - startedMs) : 0;
+  const { steps, lastAction } = extractToolProgress(execution);
+  const heartbeatRelative = formatRelativeShort(execution.last_heartbeat_at, now);
+  const heartbeatMs = execution.last_heartbeat_at
+    ? Math.max(0, now - new Date(execution.last_heartbeat_at).getTime())
+    : null;
+  // 心跳超过 60 秒视为"可能卡住"（背景换警示色）
+  const heartbeatStale = heartbeatMs !== null && heartbeatMs > 60_000;
+
+  // 三种渲染态，让用户一眼看出系统在做什么：
+  //   queued    —— started_at 还没回写（execution.state=QUEUED / DISPATCHED 刚派发瞬间）
+  //   running   —— 正常跑（默认）
+  //   stale     —— 心跳 60s+ 没刷，可能卡住（橙色警示）
+  const renderState = !startedMs ? "queued" : heartbeatStale ? "stale" : "running";
+  const stateLabel = renderState === "queued"
+    ? "排队中…"
+    : renderState === "stale"
+      ? "心跳停滞，可能卡住"
+      : "执行中";
+  const elapsedText = startedMs ? `已运行 ${formatElapsedShort(elapsed)}` : "等待 worker 启动";
+
+  return (
+    <div className={`running-progress running-progress-${renderState}`}>
+      <div className="running-progress-row">
+        <span className="running-progress-pulse" aria-hidden="true" />
+        <span className="running-progress-label">{stateLabel}</span>
+        <span className="running-progress-elapsed">{elapsedText}</span>
+      </div>
+      <div className="running-progress-meta">
+        {steps > 0 ? <span>已完成 {steps} 步</span> : <span>等待 worker 上报第一步</span>}
+        <span>·</span>
+        <span title={execution.last_heartbeat_at ?? ""}>
+          {execution.last_heartbeat_at ? `${heartbeatRelative}活跃` : "尚未心跳"}
+        </span>
+      </div>
+      {lastAction ? (
+        <div className="running-progress-action" title={lastAction}>
+          正在 {lastAction}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function App() {
   const [tab, setTab] = useState<"Dashboard" | "Workers" | "Settings">("Dashboard");
   const [dashboardView, setDashboardView] = useState<"board" | "detail" | "create">("board");
   const [demands, setDemands] = useState<Demand[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [showWorkerCreateModal, setShowWorkerCreateModal] = useState(false);
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
   const [workerDraft, setWorkerDraft] = useState<WorkerDraft>(DEFAULT_WORKER_DRAFT);
   const [detail, setDetail] = useState<DemandDetail | null>(null);
   const [activeDemandId, setActiveDemandId] = useState<string | null>(null);
@@ -251,14 +494,9 @@ export function App() {
         : worker.config?.workspace_root
     }));
 
+    // 占位卡只保留 Codex 和 Claude Code 两种（review 反馈：只留 claude 和 codex，去掉 OpenClaw）。
+    // 如果用户已经配置了同名 worker，下面的 filter 会自动隐藏占位卡。
     const placeholders: WorkerTile[] = [
-      {
-        key: "placeholder-codex",
-        name: "Codex",
-        subtitle: "Not configured",
-        capabilities: ["Code generation", "Editing", "Command execution"],
-        lamp: "offline"
-      },
       {
         key: "placeholder-claude-code",
         name: "Claude Code",
@@ -267,10 +505,10 @@ export function App() {
         lamp: "offline"
       },
       {
-        key: "placeholder-openclaw",
-        name: "OpenClaw",
+        key: "placeholder-codex",
+        name: "Codex",
         subtitle: "Not configured",
-        capabilities: ["Automation", "Code execution", "Task handling"],
+        capabilities: ["Code generation", "Editing", "Command execution"],
         lamp: "offline"
       }
     ];
@@ -353,6 +591,42 @@ export function App() {
       window.alert(error instanceof Error ? error.message : "Failed to register worker");
     } finally {
       setWorkerSubmitting(false);
+    }
+  }
+
+  /**
+   * 重命名 worker —— 弹 prompt 让用户输入新名字，PATCH 后刷新列表。
+   * 工作量小的"编辑"路径，避免做完整 edit 表单。
+   */
+  async function renameWorker(workerId: string, currentName: string) {
+    const input = window.prompt("修改 worker 名称（不影响 adapter 配置）：", currentName);
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+      const patched = await apiRequest<Worker>(`/workers/${workerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed })
+      });
+      setWorkers((current) => current.map((w) => (w.worker_id === workerId ? patched : w)));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "重命名失败");
+    }
+  }
+
+  /**
+   * 删除 worker —— 后端会拒绝带活跃 execution 的删除（409），UI 把原因报给用户。
+   * 成功后从前端 workers 列表移除即可，下次 ws workers broadcast 会再次校准。
+   */
+  async function deleteWorker(workerId: string, displayName: string) {
+    if (!window.confirm(`删除 worker "${displayName}"？`)) return;
+    try {
+      await apiRequest<void>(`/workers/${workerId}`, { method: "DELETE" });
+      setWorkers((current) => current.filter((w) => w.worker_id !== workerId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "删除失败";
+      window.alert(msg);
     }
   }
 
@@ -953,20 +1227,15 @@ export function App() {
           onClick={() => void respondToDecision(decision.decision_id, "Reject" as DecisionAction)}
         >
           {submitting ? "Sending..." : "Reject"}
-        </button>,
-        <button
-          key={`${decision.decision_id}-cancel`}
-          type="button"
-          className="ghost-button danger-button"
-          disabled={submitting}
-          onClick={() => void respondToDecision(decision.decision_id, "CancelDemand" as DecisionAction)}
-        >
-          {submitting ? "Sending..." : "Cancel Demand"}
         </button>
+        // PATH_GRANT 决策原本有 "Cancel Demand" 按钮（DecisionAction.CANCEL_DEMAND）—— 前端按
+        // review #6 要求不再展示。后端 API 仍接受 CancelDemand action，需要时可通过其它途径触发。
       ];
     }
 
-    const actions = (decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[];
+    // 通用决策按钮：剔除 CancelDemand，按 review #6 不在前端暴露这个动作
+    const actions = ((decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[])
+      .filter((action) => action !== "CancelDemand");
     return actions.map((action) => {
       const needsNote = decisionActionNeedsNote(action);
       const disabled = decisionSubmitting === decision.decision_id || (needsNote && !decisionNoteFor(decision.decision_id).trim());
@@ -1013,6 +1282,22 @@ export function App() {
     invalidateDemandView();
     setDashboardView("board");
     setSelectedSubgoalDialog(null);
+  }
+
+  /**
+   * 关闭 Create Demand 弹窗的"软关闭"行为：
+   * - 如果用户从某个 demand 详情页打开了创建窗口（activeDemandId 非空且 demand 尚未创建完毕），
+   *   关闭只切回那个详情页，不清 detail 数据，符合"只关掉这个弹窗"的直觉
+   * - 否则（直接从 board 进创建）回 board
+   * 这是 review feedback：点退出应回上一个具体 demand 页面，而不是直接被踢回主界面。
+   */
+  function closeCreateModal() {
+    setSelectedSubgoalDialog(null);
+    if (activeDemandId) {
+      setDashboardView("detail");
+    } else {
+      setDashboardView("board");
+    }
   }
 
   const showSidebar = tab === "Dashboard" && dashboardView !== "board";
@@ -1500,48 +1785,20 @@ export function App() {
 	                            ? "Sending..."
 	                            : `Interrupt${runningExecutionCount > 0 ? ` (${runningExecutionCount})` : ""}`}
 	                        </button>
-	                        <button
-	                          type="button"
-	                          className="ghost-button danger-button"
-	                          disabled={controlSubmittingId === detail.demand.demand_id || ["COMPLETED", "FAILED", "CANCELLED"].includes(detail.demand.state)}
-	                          onClick={() => void controlDemand(detail.demand.demand_id, "cancel", "Cancelled from demand detail", { returnToBoardAfterCancel: true })}
-	                        >
-	                          {controlSubmittingId === detail.demand.demand_id ? "Sending..." : "Cancel Demand"}
-	                        </button>
+	                        {/* 详情页头部原 "Cancel Demand" 按钮按 review #6 隐藏（后端 controlDemand cancel API 仍保留）。 */}
 	                      </div>
 	                    </div>
 	                  </section>
 
-	                  <section className="panel detail-section runtime-panel">
-	                    <div className="panel-heading">
-	                      <div>
-	                        <p className="eyebrow">Runtime Session</p>
-	                        <h2>{runtimeSession?.progress_note ?? "Waiting for scheduler progress"}</h2>
-	                      </div>
-	                      <span className={`status-chip status-chip-${stateTone(runtimeSession?.waiting_on ? "PENDING_DECISION" : detail.demand.state)}`}>
-	                        {runtimeSession?.waiting_on ? `waiting: ${runtimeSession.waiting_on}` : "live"}
-	                      </span>
-	                    </div>
-	                    <div className="runtime-session-grid">
-	                      <div>
-	                        <span>Phase</span>
-	                        <strong>{runtimeSession?.phase ?? detail.demand.current_phase}</strong>
-	                      </div>
-	                      <div>
-	                        <span>Frontier</span>
-	                        <strong>{runtimeSession?.frontier_subgoal_ids?.length ?? latestPlan?.frontier_subgoal_ids?.length ?? 0}</strong>
-	                      </div>
-	                      <div>
-	                        <span>Checkpoint</span>
-	                        <strong>{runtimeSession?.latest_checkpoint ?? "none"}</strong>
-	                      </div>
-	                      <div>
-	                        <span>Last Progress</span>
-	                        <strong>{runtimeSession?.last_progress_at ?? detail.demand.updated_at}</strong>
-	                      </div>
-	                    </div>
-	                  </section>
-
+	                  {/* 调试信息折叠组：Backend State Record + Plan Evolution。
+	                      Runtime Session 按 review 反馈整体从前端去掉（后端日志里仍记录），
+	                      避免给客户看 Phase / Frontier / Checkpoint 这种内部状态机字段。 */}
+	                  <details className="debug-fold">
+	                    <summary className="debug-fold-summary">
+	                      <span className="debug-fold-icon" aria-hidden="true">🛠</span>
+	                      <span>调试信息（后台记录 / 计划演化）</span>
+	                      <small className="debug-fold-hint">点开查看 · 仅供开发者排查</small>
+	                    </summary>
 	                  <section className="panel detail-section state-record-panel">
 	                    <div className="panel-heading">
 	                      <div>
@@ -1692,6 +1949,7 @@ export function App() {
 	                      </section>
 	                    );
 	                  })()}
+	                  </details>
 
 	                  {openDecisions.length > 0 ? (
 	                    <section className="panel detail-section decision-panel">
@@ -1756,20 +2014,8 @@ export function App() {
                           <small className="plan-subnote">Progressive: each subgoal is shaped by the previous worker feedback.</small>
                         </div>
                         <div className="plan-heading-actions">
-                          <button
-                            type="button"
-                            className="ghost plan-replan-button"
-                            onClick={() => void requestReplan()}
-                            disabled={
-                              replanSubmitting
-                              || planIsTransitioning
-                              || alignmentInProgress
-                              || ["COMPLETED", "FAILED", "CANCELLED", "PAUSED"].includes(detail.demand.state)
-                            }
-                            title="重新规划：发起一次新的 planner 调用，把当前 plan 替换为新的方案"
-                          >
-                            {replanSubmitting ? "Replanning..." : "Replan"}
-                          </button>
+                          {/* Replan 按钮按 review 反馈从前端去掉。后端 requestReplan API 仍保留，
+                              通过 DECISION_RESPONSE_RECEIVED(action=ProvideInfo, note 含 "replan") 触发。 */}
                           <span className="status-chip">{detail.subgoals.length} subgoals</span>
                         </div>
                       </div>
@@ -2065,6 +2311,14 @@ export function App() {
                                             </button>
                                           ) : null}
                                         </div>
+                                        {/* 执行中进度条放在卡片底部、横跨整行 —— 之前嵌在右列窄槽容易被忽略。
+                                            注意：不再用 `&& execution` 守卫 —— subgoal 显示 running 但 execution
+                                            row 尚未出现的早期窗口也要让用户看到占位卡。 */}
+                                        {stage === "running" ? (
+                                          <div className="plan-subgoal-progress-row">
+                                            <RunningProgress execution={execution ?? null} />
+                                          </div>
+                                        ) : null}
                                       </div>
                                     );
                                   })}
@@ -2087,14 +2341,14 @@ export function App() {
               )}
 
               {showCreateModal && (
-                <div className="modal-layer" onClick={returnToBoard}>
+                <div className="modal-layer" onClick={closeCreateModal}>
                   <div className="create-modal" onClick={(event) => event.stopPropagation()}>
                     <div className="panel-heading">
                       <div>
                         <p className="eyebrow">{detail && demandNeedsClarification(detail.demand) ? "Alignment" : "New Demand"}</p>
                         <h2>{detail && demandNeedsClarification(detail.demand) ? "Clarify Demand" : "Create Demand"}</h2>
                       </div>
-                      <button className="ghost-button" onClick={returnToBoard}>Close</button>
+                      <button className="ghost-button" onClick={closeCreateModal}>Close</button>
                     </div>
                     {detail && demandNeedsClarification(detail.demand) ? (
                       <div className="alignment-modal-body">
@@ -2313,22 +2567,52 @@ export function App() {
               </div>
             </div>
             <div className="worker-tiles">
-              {workerTiles.map((worker) => (
-                <div key={worker.key} className="worker-tile">
-                  <div className="worker-tile-top">
-                    <span className={`worker-lamp worker-lamp-${worker.lamp}`} />
-                    <small>{worker.subtitle}</small>
+              {workerTiles.map((worker) => {
+                // placeholder 卡片不暴露编辑 / 删除 / 详情（它对应的真实 worker 还没创建）
+                const isPlaceholder = worker.key.startsWith("placeholder-");
+                return (
+                  <div
+                    key={worker.key}
+                    className={`worker-tile${isPlaceholder ? "" : " worker-tile-clickable"}`}
+                    onClick={isPlaceholder ? undefined : () => setSelectedWorkerId(worker.key)}
+                    role={isPlaceholder ? undefined : "button"}
+                    tabIndex={isPlaceholder ? undefined : 0}
+                  >
+                    <div className="worker-tile-top">
+                      <span className={`worker-lamp worker-lamp-${worker.lamp}`} />
+                      <small>{worker.subtitle}</small>
+                      {!isPlaceholder && (
+                        <div className="worker-tile-actions" onClick={(event) => event.stopPropagation()}>
+                          <button
+                            type="button"
+                            className="worker-tile-action"
+                            title="重命名"
+                            onClick={() => void renameWorker(worker.key, worker.name)}
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            type="button"
+                            className="worker-tile-action worker-tile-action-danger"
+                            title="删除"
+                            onClick={() => void deleteWorker(worker.key, worker.name)}
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <strong>{worker.name}</strong>
+                    {worker.status ? <small>{worker.status}</small> : null}
+                    {worker.meta ? <p className="worker-tile-meta">{worker.meta}</p> : null}
+                    <div className="worker-capabilities">
+                      {worker.capabilities.map((capability) => (
+                        <span key={`${worker.key}-${capability}`} className="worker-capability-chip">{capability}</span>
+                      ))}
+                    </div>
                   </div>
-                  <strong>{worker.name}</strong>
-                  {worker.status ? <small>{worker.status}</small> : null}
-                  {worker.meta ? <p className="worker-tile-meta">{worker.meta}</p> : null}
-                  <div className="worker-capabilities">
-                    {worker.capabilities.map((capability) => (
-                      <span key={`${worker.key}-${capability}`} className="worker-capability-chip">{capability}</span>
-                    ))}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             {detail && (
               <div className="worker-grid worker-runtime-grid">
@@ -2361,21 +2645,160 @@ export function App() {
                     </div>
                   </div>
                   {hiddenHeartbeatCount > 0 && (
-                    <p className="panel-note">Hidden {hiddenHeartbeatCount} heartbeat events to keep the timeline readable.</p>
+                    <p className="panel-note">已隐藏 {hiddenHeartbeatCount} 条心跳事件，保持时间线清爽。</p>
                   )}
                   <div className="list-stack">
-                    {visibleTimelineEvents.map((item) => (
-                      <div key={item.event_id} className="timeline-item timeline-card">
-                        <strong>{item.event_type}</strong>
-                        <small>{item.created_at}</small>
-                      </div>
-                    ))}
+                    {visibleTimelineEvents.map((item) => {
+                      const human = humanizeEvent(item);
+                      return (
+                        <div
+                          key={item.event_id}
+                          className={`timeline-item timeline-card timeline-tone-${human.tone}`}
+                          title={`${item.event_type} @ ${item.created_at}`}
+                        >
+                          <strong>{human.label}</strong>
+                          <small>{formatRelativeShort(item.created_at, Date.now())}</small>
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               </div>
             )}
           </section>
         )}
+
+        {/* Worker 详情弹窗：点击 worker 卡片打开，展示 adapter / runtime / config / env / 状态 */}
+        {tab === "Workers" && selectedWorkerId && (() => {
+          const w = workers.find((item) => item.worker_id === selectedWorkerId);
+          if (!w) return null;
+          const cfg = w.config ?? {};
+          const envEntries = Object.entries(cfg.env ?? {});
+          return (
+            <div className="modal-layer" onClick={() => setSelectedWorkerId(null)}>
+              <div className="create-modal worker-detail-modal" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Worker Detail</p>
+                    <h2>{w.name}</h2>
+                  </div>
+                  <button className="ghost-button" onClick={() => setSelectedWorkerId(null)}>Close</button>
+                </div>
+                <div className="worker-detail-grid">
+                  <div className="worker-detail-row">
+                    <span>Worker ID</span>
+                    <code>{w.worker_id}</code>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Adapter</span>
+                    <strong>{w.adapter_type}</strong>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Runtime</span>
+                    <strong>{w.runtime_type ?? "local_command"}</strong>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Status</span>
+                    <strong>{w.status}</strong>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Max Concurrency</span>
+                    <strong>{w.max_concurrency ?? "—"}</strong>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Active Executions</span>
+                    <strong>{w.current_execution_ids?.length ?? 0}</strong>
+                  </div>
+                  <div className="worker-detail-row">
+                    <span>Last Seen</span>
+                    <strong>{w.last_seen_at ? formatRelativeShort(w.last_seen_at, Date.now()) : "—"}</strong>
+                  </div>
+                  {w.last_error ? (
+                    <div className="worker-detail-row worker-detail-row-error">
+                      <span>Last Error</span>
+                      <code>{w.last_error}</code>
+                    </div>
+                  ) : null}
+                  <div className="worker-detail-row">
+                    <span>Capabilities</span>
+                    <div className="worker-capabilities">
+                      {w.capabilities.map((c) => (
+                        <span key={c} className="worker-capability-chip">{c}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="worker-detail-section">
+                    <p className="eyebrow">Adapter Config</p>
+                    <div className="worker-detail-config">
+                      {cfg.workspace_root ? (
+                        <div className="worker-detail-row">
+                          <span>workspace_root</span>
+                          <code>{cfg.workspace_root}</code>
+                        </div>
+                      ) : null}
+                      {cfg.command ? (
+                        <div className="worker-detail-row">
+                          <span>command</span>
+                          <code>{cfg.command}</code>
+                        </div>
+                      ) : null}
+                      {cfg.args && cfg.args.length > 0 ? (
+                        <div className="worker-detail-row">
+                          <span>args</span>
+                          <code>{cfg.args.join(" ")}</code>
+                        </div>
+                      ) : null}
+                      {cfg.endpoint ? (
+                        <div className="worker-detail-row">
+                          <span>endpoint</span>
+                          <code>{cfg.endpoint}</code>
+                        </div>
+                      ) : null}
+                      {cfg.timeout_seconds !== undefined ? (
+                        <div className="worker-detail-row">
+                          <span>timeout</span>
+                          <strong>{cfg.timeout_seconds}s</strong>
+                        </div>
+                      ) : null}
+                      {envEntries.length > 0 ? (
+                        <div className="worker-detail-row">
+                          <span>env</span>
+                          <div className="worker-detail-env">
+                            {envEntries.map(([k, v]) => (
+                              <code key={k}>{k}={v}</code>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+                <div className="worker-detail-footer">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      setSelectedWorkerId(null);
+                      void renameWorker(w.worker_id, w.name);
+                    }}
+                  >
+                    ✏️ 重命名
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button danger-button"
+                    onClick={() => {
+                      setSelectedWorkerId(null);
+                      void deleteWorker(w.worker_id, w.name);
+                    }}
+                  >
+                    🗑 删除 Worker
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {tab === "Workers" && showWorkerCreateModal && (
           <div className="modal-layer" onClick={() => setShowWorkerCreateModal(false)}>
@@ -2405,7 +2828,8 @@ export function App() {
                     value={workerDraft.adapter_type}
                     onChange={(event) => updateWorkerDraft("adapter_type", event.target.value as AdapterType)}
                   >
-                    <option value="opencode">opencode</option>
+                    {/* 按 review 反馈仅支持 claude_code + codex，opencode 已从默认 worker 移除 */}
+                    <option value="claude_code">claude_code</option>
                     <option value="codex">codex</option>
                   </select>
                 </label>
@@ -2500,8 +2924,8 @@ export function App() {
             <div className="panel settings-panel">
               <div className="settings-header">
                 <div>
-                  <h2>LLM Settings</h2>
-                  <p>Configure the APIs used for clarification, planning, verifier assistance, and ops backup.</p>
+                  <h2>模型设置</h2>
+                  <p>填入你常用的大模型 API（默认接入 OpenAI 兼容协议）。Nodikt 会用它做需求澄清、计划生成、结果验证。</p>
                 </div>
                 <button className="primary" disabled={!settingsDirty || settingsSaving} onClick={saveSettings}>
                   {settingsSaving ? "Saving..." : "Save Settings"}
@@ -2524,14 +2948,8 @@ export function App() {
                     <section key={role} className="settings-card">
                       <div className="settings-card-header">
                         <h3>{role}</h3>
-                        <label className="toggle">
-                          <input
-                            type="checkbox"
-                            checked={model.enabled}
-                            onChange={(event) => updateModel(role, "enabled", event.target.checked)}
-                          />
-                          <span>Enabled</span>
-                        </label>
+                        {/* Enable toggle 按 review 反馈移除：模型卡只要存在就视为启用，
+                            后端 model.enabled 默认 true；要禁用直接清空 api_key 或换模型。 */}
                       </div>
 
                       <label className="field">

@@ -337,14 +337,91 @@ small,
 .detail-mini-stat,
 .plan-card,
 .row-card,
-.timeline-card,
-.decision-modal-card,
-.create-modal,
-.decision-modal {
+.timeline-card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
 }
+
+/* decision-modal-card 用在 subgoal/decision 详情 modal 内部，需要比 modal 主体 (#161616)
+   稍亮一层，跟外层形成"嵌入卡片"的视觉分层；不再用 --panel (#050505)，否则跟主体颜色接近，
+   用户看着像透明 / 文字混在一起。 */
+.decision-modal-card {
+  background: #1d1d1d;
+  border: 1px solid #353535;
+  border-radius: var(--radius-md);
+}
+
+/* modal 卡片用更亮的实色 + 强边框 + 阴影，跟 backdrop 形成明显视觉分层。
+   之前直接用 --panel (#050505) 跟 backdrop 几乎同色，看起来"透明"。 */
+.create-modal,
+.decision-modal {
+  background: #161616;
+  border: 1px solid #2e2e2e;
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  padding: 22px 24px;
+}
+
+/* ---------- 调试信息折叠组（review #11/#13/#14） ----------------------- */
+
+.debug-fold {
+  border: 1px dashed rgba(120, 120, 120, 0.35);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.015);
+  padding: 0 14px;
+  margin: 12px 0;
+}
+
+.debug-fold > .debug-fold-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted-2);
+  font-size: 13px;
+  user-select: none;
+}
+
+.debug-fold > .debug-fold-summary::-webkit-details-marker { display: none; }
+.debug-fold > .debug-fold-summary::marker { content: ""; }
+.debug-fold > .debug-fold-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  color: var(--muted-2);
+  transition: transform 120ms ease;
+}
+.debug-fold[open] > .debug-fold-summary::before { transform: rotate(90deg); }
+
+.debug-fold-icon { font-size: 14px; }
+.debug-fold-hint {
+  margin-left: auto;
+  color: #666;
+  font-size: 11px;
+}
+
+.debug-fold > .debug-fold-summary:hover { color: #cfcfcf; }
+
+.debug-fold[open] {
+  background: rgba(255, 255, 255, 0.03);
+  border-style: solid;
+  border-color: rgba(120, 120, 120, 0.45);
+}
+
+.debug-fold > .panel.detail-section {
+  /* 折叠组里的 panel 去掉外边距，让三块紧凑在一起 */
+  margin: 8px 0;
+}
+
+/* timeline tone：根据 humanizeEvent 返回的 tone 给左侧加色条，让事件类型一眼可分辨 */
+.timeline-tone-success { border-left: 3px solid #36d96d; }
+.timeline-tone-warning { border-left: 3px solid #f3a536; }
+.timeline-tone-danger  { border-left: 3px solid #ef5a5a; }
+.timeline-tone-info    { border-left: 3px solid #4a90e2; }
+.timeline-tone-neutral { border-left: 3px solid #555; }
 
 .demand-board-card,
 .demand-link,
@@ -457,6 +534,113 @@ small,
   justify-content: space-between;
   align-items: flex-start;
   gap: 10px;
+}
+
+/* worker 卡片整张可点击进入详情 */
+.worker-tile-clickable {
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.worker-tile-clickable:hover {
+  border-color: rgba(180, 180, 180, 0.45);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+/* worker 详情弹窗 */
+.worker-detail-modal { max-width: 720px; }
+
+.worker-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.worker-detail-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(80, 80, 80, 0.25);
+}
+
+.worker-detail-row > span {
+  color: var(--muted-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.worker-detail-row code {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  color: #cfd8e3;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 2px 8px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.worker-detail-row-error code {
+  color: #ffbbbb;
+  background: rgba(239, 90, 90, 0.08);
+}
+
+.worker-detail-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(80, 80, 80, 0.4);
+}
+
+.worker-detail-config {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.worker-detail-env {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.worker-detail-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(80, 80, 80, 0.4);
+}
+
+/* worker 卡片上的编辑 / 删除按钮 —— 默认低存在感，hover 显眼 */
+.worker-tile-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.worker-tile-action {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.55;
+  font-size: 13px;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.worker-tile-action:hover {
+  opacity: 1;
+  border-color: rgba(180, 180, 180, 0.4);
+}
+
+.worker-tile-action-danger:hover {
+  border-color: rgba(239, 90, 90, 0.6);
+  background: rgba(239, 90, 90, 0.08);
 }
 
 .dashboard-card-meta,
@@ -1068,6 +1252,16 @@ small,
   overflow: hidden;
 }
 
+/* 进度条作为 grid 的第 4 个子元素，跨满 3 列，让用户在卡片底部一眼看到 worker 在跑什么 */
+.plan-subgoal-progress-row {
+  grid-column: 1 / -1;
+  padding: 0 20px 16px;
+}
+
+.plan-subgoal-progress-row .running-progress {
+  margin-top: 0;
+}
+
 .subgoal-zone {
   min-width: 0;
   padding: 18px 20px;
@@ -1122,6 +1316,108 @@ small,
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ---------- RunningProgress：执行中卡 ---------------------------------- */
+
+.running-progress {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #cfd8e3;
+}
+
+/* 排队中：worker 还没真正起来跑（QUEUED / 早期 DISPATCHED）—— 安静的灰蓝 */
+.running-progress-queued {
+  border: 1px dashed rgba(150, 170, 200, 0.35);
+  background: rgba(80, 100, 130, 0.06);
+}
+
+/* 执行中：默认态 —— 蓝色脉冲 */
+.running-progress-running {
+  border: 1px solid rgba(74, 144, 226, 0.35);
+  background: rgba(74, 144, 226, 0.08);
+  animation: running-progress-glow 2.4s ease-in-out infinite;
+}
+
+/* 心跳停滞：橙色警示，无动画（避免在用户看到时还在"动" — 反而误导以为正常） */
+.running-progress-stale {
+  border: 1px solid rgba(243, 165, 54, 0.5);
+  background: rgba(243, 165, 54, 0.08);
+}
+
+.running-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.running-progress-pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a90e2;
+  box-shadow: 0 0 0 0 rgba(74, 144, 226, 0.7);
+  animation: running-progress-pulse 1.4s ease-out infinite;
+}
+
+.running-progress-stale .running-progress-pulse {
+  background: #f3a536;
+  box-shadow: none;
+  animation: none;
+}
+
+.running-progress-queued .running-progress-pulse {
+  background: #8aa0bb;
+  box-shadow: none;
+  animation: running-progress-pulse 2s ease-out infinite;
+}
+
+.running-progress-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #e8eef7;
+}
+
+.running-progress-elapsed {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-2);
+}
+
+.running-progress-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted-2);
+}
+
+.running-progress-action {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 11px;
+  color: #b3c0d0;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 4px 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes running-progress-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74, 144, 226, 0.7); }
+  70%  { box-shadow: 0 0 0 10px rgba(74, 144, 226, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 144, 226, 0); }
+}
+
+@keyframes running-progress-glow {
+  0%, 100% { border-color: rgba(74, 144, 226, 0.35); }
+  50%      { border-color: rgba(74, 144, 226, 0.55); }
 }
 
 .subgoal-status-display {
@@ -1222,7 +1518,12 @@ small,
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.8);
+  /* 背景调更黑（接近全黑）+ 加 backdrop-filter 模糊，让 modal 与背后内容明确分层。
+     之前用 rgba(0,0,0,0.8)，而 --panel 是 #050505，两者颜色几乎一样 ——
+     用户体感就是 modal 透明、文字混在一起。 */
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   transition: opacity 0.22s ease;
 }
 
