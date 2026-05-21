@@ -785,6 +785,9 @@ small,
   height: 10px;
   border-radius: 50%;
   display: inline-block;
+  /* 在 flex 容器里默认 flex-shrink:1，跟 worker-tile-actions 抢空间时会被压扁成 0×0；
+     强制 flex-shrink:0 防止灯被挤没。 */
+  flex-shrink: 0;
 }
 
 .dashboard-lamp-success,
