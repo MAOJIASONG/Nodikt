@@ -96,7 +96,7 @@ export class ReconciliationService {
 
     const claimedOutcome = failed
       ? `[recon FAILED: ${status}] ${input.verification.notes ?? input.workerResult.blocker_reason?.message ?? "no result"}`
-      : (input.workerResult.claimed_outcome ?? "");
+      : (input.workerResult.claimed_outcome?.trim() || "(worker returned no outcome)");
 
     return {
       nextStep: input.demand.operational_objective ? "planner_replan" : "clarifier_feedback",
@@ -157,7 +157,7 @@ export class ReconciliationService {
             execution,
             missionCompleted: false,
             replanRequested: true,
-            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
+            reconCompletion: this.buildReconCompletion(input)
           };
         }
         demand.state = DemandState.COMPLETED;
@@ -187,7 +187,7 @@ export class ReconciliationService {
             execution,
             missionCompleted: false,
             replanRequested: true,
-            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
+            reconCompletion: this.buildReconCompletion(input)
           };
         }
         demand.state = DemandState.ACTIVE;
@@ -216,7 +216,7 @@ export class ReconciliationService {
             execution,
             missionCompleted: false,
             replanRequested: true,
-            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
+            reconCompletion: this.buildReconCompletion(input)
           };
         }
         demand.state = DemandState.PENDING_DECISION;
@@ -245,7 +245,7 @@ export class ReconciliationService {
             execution,
             missionCompleted: false,
             replanRequested: true,
-            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
+            reconCompletion: this.buildReconCompletion(input)
           };
         }
         demand.state = DemandState.FAILED;
