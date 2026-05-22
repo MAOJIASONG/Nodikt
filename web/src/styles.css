@@ -1733,7 +1733,55 @@ small,
   width: min(560px, calc(100vw - 40px));
   max-height: calc(100vh - 80px);
   overflow: auto;
-  transition: opacity 0.22s ease, transform 0.22s ease, filter 0.22s ease;
+  transition: width 0.22s ease, max-height 0.22s ease, opacity 0.22s ease, transform 0.22s ease, filter 0.22s ease;
+}
+
+.create-modal.is-expanded {
+  width: min(960px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+}
+
+.textarea-expandable {
+  position: relative;
+  width: 100%;
+}
+
+.textarea-expandable textarea {
+  transition: min-height 0.22s ease;
+  padding-right: 44px;
+}
+
+.create-modal.is-expanded .textarea-expandable textarea {
+  min-height: min(480px, calc(100vh - 320px));
+}
+
+.textarea-expand-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.textarea-expand-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.textarea-expand-toggle:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 1px;
 }
 
 .subgoal-result-modal {

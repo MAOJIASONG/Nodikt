@@ -165,6 +165,8 @@ export const messages: Record<Language, MessageDict> = {
     "create_demand.copy": "Start with the demand in natural language. Nodikt will open the detail view immediately and stream alignment and planning progress there.",
     "create_demand.placeholder": "Describe the demand, expected output, project path, and key constraints",
     "create_demand.submit": "Create Demand",
+    "create_demand.expand": "Expand input",
+    "create_demand.collapse": "Collapse input",
 
     // worker detail / create modals
     "worker_detail.eyebrow": "Worker Detail",
@@ -592,6 +594,8 @@ export const messages: Record<Language, MessageDict> = {
     "create_demand.copy": "用自然语言描述需求即可。Nodikt 会立即打开详情视图，并在那里流式呈现对齐与规划进度。",
     "create_demand.placeholder": "描述需求、期望产出、项目路径与关键约束",
     "create_demand.submit": "创建需求",
+    "create_demand.expand": "展开输入框",
+    "create_demand.collapse": "收起输入框",
 
     // worker detail / create modals
     "worker_detail.eyebrow": "Worker 详情",
