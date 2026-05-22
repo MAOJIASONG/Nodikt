@@ -283,7 +283,8 @@ bash start.sh reinstall # 强制重新安装依赖并构建
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE) 授权。
+本项目采用双重许可：AGPL-3.0 (适用于开源 / 个人 / 研究用途) 以及商业许可证 (适用于专有 / 闭源用途)。
+This project is dual-licensed under AGPL-3.0 (for open source / personal / research use) and a Commercial License (for proprietary use).
 
 ---
 
