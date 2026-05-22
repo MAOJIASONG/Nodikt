@@ -37,6 +37,39 @@ export interface ReconciliationOutcome {
   replanRequested: boolean;
   decisionReasonCode?: DecisionReasonCode;
   decisionPrompt?: string;
+  /**
+   * 仅在 subgoal.kind === "recon" 时非空。reviewHandlers 用它决定 barrier 完成后 publish
+   * USER_INPUT_RECEIVED(recon_findings) 还是 REPLAN_REQUESTED(recon_completed)。
+   * 不再依赖 reviewHandlers 自己的 verified_status 白名单判断。
+   */
+  reconCompletion?: ReconCompletionOutcome;
+}
+
+/**
+ * 一条"recon subgoal 完成"事件应往哪个下游推进。
+ * reconciliation 是唯一计算这个的地方；reviewHandlers 不再自己判断。
+ *
+ *  - "clarifier_feedback": 把 finding 当成 USER_INPUT_RECEIVED(input_kind="recon_findings")
+ *    回灌给 clarifier。用在 demand 还没生成 operational_objective 的 clarification 阶段。
+ *  - "planner_replan": publish REPLAN_REQUESTED(reason="recon_completed") 触发 planner 重新规划。
+ *    用在 demand 已经有 operational_objective 的 planning/execution 阶段。
+ */
+export type ReconNextStep = "clarifier_feedback" | "planner_replan";
+
+export interface ReconFinding {
+  subgoal_id: string;
+  subgoal_title: string;
+  /** 正常情况是 worker 的 claimed_outcome；recon 工具级失败时是 [recon FAILED: <status>] <reason>。 */
+  claimed_outcome: string;
+  compressed_history: string;
+  captured_at: string;
+  /** true 时该 finding 文本以 "[recon FAILED: ...]" 标注，clarifier 应忽略其内容只参考 sibling finding。 */
+  failed: boolean;
+}
+
+export interface ReconCompletionOutcome {
+  nextStep: ReconNextStep;
+  finding: ReconFinding;
 }
 
 export class ReconciliationService {
