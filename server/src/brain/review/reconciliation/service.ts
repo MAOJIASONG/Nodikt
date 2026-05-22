@@ -74,6 +74,44 @@ export interface ReconCompletionOutcome {
 
 export class ReconciliationService {
   /**
+   * 决定 recon subgoal 完成后的下游路径 + 构造 finding。
+   * 仅在 input.subgoal.kind === "recon" 时调用。
+   *
+   * 路由规则：单一判据 demand.operational_objective 是否存在 ——
+   *   - null: clarification 阶段，结果回灌给 clarifier
+   *   - 非 null: planning / execution 阶段，触发 planner replan
+   *
+   * 不看 verified_status —— verified_status 只影响 finding 内部的标注（reconFailed），
+   * 不影响"应该路由到哪个下游"。这是这次重构的核心：把路由判据从枚举白名单
+   * 改成单一的"demand 处于哪个阶段"事实。
+   */
+  private buildReconCompletion(input: {
+    demand: Demand;
+    subgoal: SubgoalContract;
+    workerResult: WorkerResult;
+    verification: VerificationResult;
+  }): ReconCompletionOutcome {
+    const status = input.verification.verified_status;
+    const failed = status === VerificationStatus.FAILED || status === VerificationStatus.UNVERIFIABLE;
+
+    const claimedOutcome = failed
+      ? `[recon FAILED: ${status}] ${input.verification.notes ?? input.workerResult.blocker_reason?.message ?? "no result"}`
+      : (input.workerResult.claimed_outcome ?? "");
+
+    return {
+      nextStep: input.demand.operational_objective ? "planner_replan" : "clarifier_feedback",
+      finding: {
+        subgoal_id: input.subgoal.subgoal_id,
+        subgoal_title: input.subgoal.title,
+        claimed_outcome: claimedOutcome,
+        compressed_history: input.workerResult.compressed_history ?? "",
+        captured_at: nowIso(),
+        failed
+      }
+    };
+  }
+
+  /**
    * 函数作用：归并执行结果和验证结果，决定后续调度动作。
    *
    * 参数说明：
@@ -118,7 +156,8 @@ export class ReconciliationService {
             subgoal,
             execution,
             missionCompleted: false,
-            replanRequested: true
+            replanRequested: true,
+            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
           };
         }
         demand.state = DemandState.COMPLETED;
@@ -147,7 +186,8 @@ export class ReconciliationService {
             subgoal,
             execution,
             missionCompleted: false,
-            replanRequested: true
+            replanRequested: true,
+            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
           };
         }
         demand.state = DemandState.ACTIVE;
@@ -175,7 +215,8 @@ export class ReconciliationService {
             subgoal,
             execution,
             missionCompleted: false,
-            replanRequested: true
+            replanRequested: true,
+            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
           };
         }
         demand.state = DemandState.PENDING_DECISION;
@@ -203,7 +244,8 @@ export class ReconciliationService {
             subgoal,
             execution,
             missionCompleted: false,
-            replanRequested: true
+            replanRequested: true,
+            reconCompletion: this.buildReconCompletion({ demand: input.demand, subgoal: input.subgoal, workerResult: input.workerResult, verification: input.verification })
           };
         }
         demand.state = DemandState.FAILED;
