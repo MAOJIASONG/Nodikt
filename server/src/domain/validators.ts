@@ -242,6 +242,13 @@ export const settingsSchema = z.object({
   })
 });
 
+export const handlerFailedSchema = z.object({
+  source_event_type: z.string(),
+  message: z.string(),
+  error_name: z.string(),
+  failed_at: z.string()
+});
+
 export const schedulerEventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.nativeEnum(EventType),

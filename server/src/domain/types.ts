@@ -505,6 +505,22 @@ export interface OpsAlertPayload {
   details?: Record<string, unknown>;
 }
 
+/**
+ * 当 EventBus 调用的 handler 内部抛出未被 handler 自己 catch 的异常时，由 EventBus 兜底
+ * publish 这个事件。提供足够上下文让下游 ops 监控 / UI 把这次失败显式呈现，避免 throw
+ * 被沉默 catch 后 demand 静默卡死。
+ */
+export interface HandlerFailedPayload {
+  /** 触发 handler 的事件类型（被吞掉的那个事件） */
+  source_event_type: string;
+  /** 错误信息（error.message）。Stack 没附上，避免泄露内部 file path 到 UI；ops log 单独记 stack。 */
+  message: string;
+  /** 错误的 name 字段（如 'AssertionError' / 'TypeError' / 'LlmInvocationError'），帮 ops 分类。 */
+  error_name: string;
+  /** ISO 时间戳，handler 抛错那一刻。 */
+  failed_at: string;
+}
+
 export interface MissionCompletedPayload {
   summary: string;
 }
@@ -544,6 +560,7 @@ export type EventPayloadMap = {
   [EventType.OPS_RECOVERY_ATTEMPTED]: OpsRecoveryAttemptedPayload;
   [EventType.OPS_RECOVERY_FAILED]: OpsRecoveryFailedPayload;
   [EventType.OPS_ALERT]: OpsAlertPayload;
+  [EventType.HANDLER_FAILED]: HandlerFailedPayload;
   [EventType.MISSION_COMPLETED]: MissionCompletedPayload;
 };
 
