@@ -44,7 +44,8 @@ import {
   assertTransition,
   isTerminalDemand,
   transitionDemand,
-  transitionSubgoal
+  transitionSubgoal,
+  tryTransition
 } from "../stateMachine.js";
 import {
   appendExecutionGuidance,
@@ -754,16 +755,38 @@ export async function onDecisionRequestCreated(event: SchedulerEvent, ctx: Handl
         progress_note: `Decision required during alignment: ${reasonCode}`
       }));
     } else {
-      await ctx.repositories.demands.upsert(transitionDemand(demand, {
-        state: DemandState.PENDING_DECISION,
-        current_phase: DemandPhase.REVIEW,
-        active_decision_id: payload.decision_request.decision_id
-      }, {
-        phase: DemandPhase.REVIEW,
-        waiting_on: "user_decision",
-        latest_checkpoint: payload.decision_request.decision_id,
-        progress_note: `Decision required: ${reasonCode}`
-      }));
+      const t = tryTransition("demand", demand.state, DemandState.PENDING_DECISION, DEMAND_TRANSITIONS);
+      if (t.ok) {
+        await ctx.repositories.demands.upsert(transitionDemand(demand, {
+          state: DemandState.PENDING_DECISION,
+          current_phase: DemandPhase.REVIEW,
+          active_decision_id: payload.decision_request.decision_id
+        }, {
+          phase: DemandPhase.REVIEW,
+          waiting_on: "user_decision",
+          latest_checkpoint: payload.decision_request.decision_id,
+          progress_note: `Decision required: ${reasonCode}`
+        }));
+      } else {
+        // 不能合法转 PENDING_DECISION（例如 demand 处于未预料的源状态），降级：保持源状态，
+        // 但仍挂上 active_decision_id 让 UI 显示决策卡。af656df 仅特判了 PENDING_ALIGNMENT；
+        // 这是把同类防御扩展到所有非法源状态，避免下一次新增 enum / 边角 case 重现 Class B 静默卡死。
+        logger.warn({
+          demandId: demand.demand_id,
+          decisionId: payload.decision_request.decision_id,
+          reasonCode,
+          fromState: demand.state,
+          skipReason: t.reason
+        }, "demand state 不允许转 PENDING_DECISION，保持源状态只挂 active_decision_id");
+        await ctx.repositories.demands.upsert(transitionDemand(demand, {
+          active_decision_id: payload.decision_request.decision_id
+        }, {
+          phase: demand.current_phase,
+          waiting_on: "user_decision",
+          latest_checkpoint: payload.decision_request.decision_id,
+          progress_note: `Decision required (state preserved: ${demand.state}): ${reasonCode}`
+        }));
+      }
     }
   } else {
     logger.warn({ demandId: event.demand_id, decisionId: payload.decision_request.decision_id }, "正在保存决策请求，但未找到对应需求");
