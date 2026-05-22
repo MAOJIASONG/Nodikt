@@ -102,6 +102,21 @@ export class ReconciliationService {
           replanRequested: false
         };
       case VerificationStatus.PARTIAL:
+        // recon-in-clarification 部分满足：跟 UNVERIFIABLE/FAILED 同款 —— 不能动 demand state
+        // （PENDING_ALIGNMENT → ACTIVE 状态机非法），由 reviewHandlers 的 barrier 把这条 recon 算成
+        // "已完成"流转给 clarifier，让它根据现有发现继续决定下一步（NEEDS_RECON / NEEDS_CLARIFICATION / READY）。
+        if (isReconSubgoal && !input.demand.operational_objective) {
+          subgoal.state = SubgoalState.DONE;     // 部分满足仍当 DONE —— 已经有可用 finding 给 clarifier
+          execution.state = ExecutionState.DONE;
+          execution.completed_at = timestamp;
+          return {
+            demand,
+            subgoal,
+            execution,
+            missionCompleted: false,
+            replanRequested: true
+          };
+        }
         demand.state = DemandState.ACTIVE;
         demand.current_phase = DemandPhase.EXECUTION;
         demand.progress_percent = Math.min(90, demand.progress_percent + 35);
