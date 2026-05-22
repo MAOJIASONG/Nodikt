@@ -72,6 +72,7 @@ export class OpsMonitor {
         await this.checkWorkerHealth(eventBus, settings);
         await this.checkExecutions(eventBus, settings);
         await this.checkStuckDemands(eventBus);
+        await this.checkHandlerFailures(eventBus);
       } catch (error) {
         logger.error({ err: error }, "Ops monitor tick failed");
       }
@@ -162,6 +163,58 @@ export class OpsMonitor {
         EventType.REPLAN_REQUESTED,
         { reason: "resume" },
         { demand_id: demand.demand_id }
+      );
+    }
+  }
+
+  /**
+   * 函数作用：扫最近 60s 内的 HANDLER_FAILED 事件，对每个相关 demand 触发一次
+   * REPLAN_REQUESTED("resume") 自愈尝试 —— 配合 T2 的 EventBus 兜底，让 handler 抛错不再静默卡死。
+   *
+   * 触发链路：
+   *   handler throw → EventBus 兜底 publish HANDLER_FAILED →（本方法）扫到 → publishOnce REPLAN_REQUESTED
+   *   → planner 决定下一步。
+   *
+   * 不在 EventBus 直接 publish 是因为 handler 抛错那一刻 demand 可能处于不一致状态，
+   * 立即递归 publish 风险大；让 ops_monitor 巡检拿到稳定快照后再触发恢复更安全。
+   *
+   * 安全门：
+   *   - server 冷启动 OPS_COLD_START_GRACE_MS 内不动（避免启动期事件回放造成假阳性）
+   *   - publishOnce 提供 per-demand 5min 冷却,避免反复触发同一个失败 demand 的恢复
+   */
+  private async checkHandlerFailures(eventBus: EventBus): Promise<void> {
+    if (Date.now() - this.serviceStartedAt < OPS_COLD_START_GRACE_MS) {
+      return;
+    }
+
+    const since = Date.now() - 60_000;
+    const events = await this.repositories.events.list();
+    const recent = events.filter((e) =>
+      e.event_type === EventType.HANDLER_FAILED
+      && new Date(e.created_at).getTime() > since
+      && e.demand_id
+    );
+
+    if (recent.length === 0) {
+      return;
+    }
+
+    for (const e of recent) {
+      const payload = e.payload as { source_event_type?: string; message?: string; error_name?: string };
+      logger.warn({
+        demandId: e.demand_id,
+        sourceEventType: payload.source_event_type,
+        errorName: payload.error_name,
+        message: payload.message
+      }, "检测到 HANDLER_FAILED —— 触发自愈 REPLAN_REQUESTED(reason=resume)");
+
+      await this.publishOnce(
+        eventBus,
+        `handler-failed:${e.demand_id}`,
+        300_000, // 5min per-demand cooldown
+        EventType.REPLAN_REQUESTED,
+        { reason: "resume" },
+        { demand_id: e.demand_id }
       );
     }
   }
