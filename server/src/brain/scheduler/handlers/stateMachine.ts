@@ -192,6 +192,39 @@ export function assertTransition<TState extends string>(
 }
 
 /**
+ * 非抛出版本的 transition 校验 —— 调用方决定怎么处理非法转换，避免必须 try/catch。
+ *
+ * 用法：
+ *   const t = tryTransition("demand", from, to, DEMAND_TRANSITIONS);
+ *   if (!t.ok) {
+ *     logger.warn({ reason: t.reason }, "skipping illegal demand transition");
+ *     return fallbackOutcome;
+ *   }
+ *
+ * 用在已知可能撞状态机的高风险点（reconciliation / alignment-time decision card），
+ * 让 caller 显式选择降级路径而不是依赖上层 catch 静默处理。assertTransition 保持原样
+ * （50+ 既有调用方不动）。
+ */
+export function tryTransition<TState extends string>(
+  label: string,
+  current: TState,
+  next: TState,
+  transitions: Record<TState, TState[]>
+): { ok: true } | { ok: false; reason: string } {
+  const allowed = transitions[current];
+  if (!allowed) {
+    return { ok: false, reason: `${label}: unknown state '${current}'` };
+  }
+  if (allowed.includes(next)) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: `${label}: illegal transition '${current}' -> '${next}' (allowed: ${allowed.join(", ")})`
+  };
+}
+
+/**
  * 函数作用：生成需求状态转换后的新快照。
  *
  * 参数说明：
