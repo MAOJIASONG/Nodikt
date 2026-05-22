@@ -496,54 +496,29 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
       })
     );
   } else if (outcome.replanRequested) {
-    // recon 子目标 verified done 触发的回流分两种情况：
-    //   (a) demand 已经 clarified → publish REPLAN_REQUESTED(reason="recon_completed")
-    //   (b) demand 尚未 clarified → publish USER_INPUT_RECEIVED(input_kind="recon_findings") 回灌给 clarifier
-    // 并行 recon barrier：还有别的 recon 在跑就把发现暂存到 buffer 不发后续事件，
-    // 等最后一个 recon 完成才一次性回灌
-    // recon 失败（FAILED / UNVERIFIABLE）的 subgoal 也参与 barrier：把它当成一条"没结果"的 finding
-    // 计数进 barrier，让其他完成的 recon 能正常汇总；只有这样 clarifier 才能拿到 1/2 有效发现继续推进。
-    // 包含 PARTIAL —— recon-in-clarification 的 PARTIAL 意味着 worker 拿到了部分有用 finding（典型：
-    // 4 个 criteria 满足 3 个），应该回流给 clarifier 让它根据已有信息推进，而不是误判成"任务还没完成"
-    // 走 REPLAN_REQUESTED → onReplanRequested 在 OO=null 时拒绝 → 卡死。
-    const isReconReplan = subgoal.kind === "recon"
-      && (verification.verified_status === "VERIFIED_DONE"
-          || verification.verified_status === "PARTIAL"
-          || verification.verified_status === "FAILED"
-          || verification.verified_status === "UNVERIFIABLE");
-
-    if (isReconReplan) {
-      // PARTIAL 当作成功 finding 传给 clarifier —— worker 真的拿到了部分可用信息（典型：4 个 criteria
-      // 满足 3 个），claimed_outcome 有内容，不该标 [recon FAILED]。只有 FAILED / UNVERIFIABLE 真没用。
-      const reconFailed = verification.verified_status === "FAILED"
-        || verification.verified_status === "UNVERIFIABLE";
+    // 单一入口：reconciliation.reconCompletion 告诉我们这个 recon 完成应该往哪里推。
+    // 不再 reviewHandlers 自己按 verified_status 枚举值白名单分流 ——
+    // 那种白名单设计漏一个值就静默走错路（参见 9adc397 hotfix）。
+    if (outcome.reconCompletion) {
+      const completion = outcome.reconCompletion;
       const activeReconExecutions = await listActiveOtherReconExecutions(
         ctx,
         demand.demand_id,
         execution.execution_id
       );
-      const currentFinding = reconFailed
-        ? {
-            subgoal_id: subgoal.subgoal_id,
-            subgoal_title: subgoal.title,
-            claimed_outcome: `[recon FAILED: ${verification.verified_status}] ${verification.notes ?? workerResult.blocker_reason?.message ?? "no result"}`,
-            compressed_history: workerResult.compressed_history ?? "",
-            captured_at: nowIso()
-          }
-        : {
-            subgoal_id: subgoal.subgoal_id,
-            subgoal_title: subgoal.title,
-            claimed_outcome: workerResult.claimed_outcome ?? "",
-            compressed_history: workerResult.compressed_history ?? "",
-            captured_at: nowIso()
-          };
+      const currentFinding = {
+        subgoal_id: completion.finding.subgoal_id,
+        subgoal_title: completion.finding.subgoal_title,
+        claimed_outcome: completion.finding.claimed_outcome,
+        compressed_history: completion.finding.compressed_history,
+        captured_at: completion.finding.captured_at
+      };
       const freshDemand = await ctx.repositories.demands.getById(demand.demand_id);
       const existingBuffer = Array.isArray(freshDemand?.metadata?.recon_findings_buffer)
         ? (freshDemand!.metadata!.recon_findings_buffer as Array<Record<string, unknown>>)
         : [];
 
       if (activeReconExecutions.length > 0) {
-        // 还有别的 recon 在跑——只暂存
         const nextBuffer = [...existingBuffer, currentFinding];
         await ctx.repositories.demands.upsert({
           ...freshDemand!,
@@ -558,9 +533,8 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
           subgoalId: subgoal.subgoal_id,
           bufferedCount: nextBuffer.length,
           stillActiveReconCount: activeReconExecutions.length
-        }, "Recon 完成但同 demand 还有别的 recon 在跑，发现暂存等待汇总");
+        }, "Recon 完成但同 demand 还有别的 recon 在跑,发现暂存等待汇总");
       } else {
-        // 自己是最后一个 recon ——清空 buffer，把所有发现一次性合成回灌
         const allFindings = [...existingBuffer, currentFinding]
           .map((f) => [
             `Recon subgoal: ${String(f.subgoal_title ?? "(untitled)")}`,
@@ -578,14 +552,14 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
           updated_at: nowIso()
         });
 
-        if (!demand.operational_objective) {
-          // (b) clarification 阶段：回灌给 clarifier
+        // reconciliation 已经决定好下游路径,这里只查路由表 publish 对应事件。
+        if (completion.nextStep === "clarifier_feedback") {
           logger.info({
             demandId: demand.demand_id,
             subgoalId: subgoal.subgoal_id,
             bufferedCount: existingBuffer.length + 1,
             findingsLen: allFindings.length
-          }, "所有 recon 已完成，把累积发现回灌给 clarifier");
+          }, "所有 recon 已完成,把累积发现回灌给 clarifier");
           events.push(
             createEvent(
               EventType.USER_INPUT_RECEIVED,
@@ -599,12 +573,12 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
             )
           );
         } else {
-          // (a) plan 阶段：触发 planner 重新规划
+          // nextStep === "planner_replan"
           logger.info({
             demandId: demand.demand_id,
             subgoalId: subgoal.subgoal_id,
             bufferedCount: existingBuffer.length + 1
-          }, "所有 recon 已完成，触发 planner 重新规划");
+          }, "所有 recon 已完成,触发 planner 重新规划");
           events.push(
             createEvent(EventType.REPLAN_REQUESTED, { reason: "recon_completed" as EventReason }, { demand_id: demand.demand_id })
           );
@@ -615,10 +589,10 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
       logger.info({
         demandId: demand.demand_id,
         subgoalId: subgoal.subgoal_id,
-        subgoalKind: subgoal.kind
-      }, "验证后准备请求重新规划 (隐式)");
+        verifiedStatus: verification.verified_status
+      }, "非 recon 的隐式重新规划");
       events.push(
-        createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" }, { demand_id: demand.demand_id })
+        createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" as EventReason }, { demand_id: demand.demand_id })
       );
     }
   } else if (outcome.missionCompleted) {
