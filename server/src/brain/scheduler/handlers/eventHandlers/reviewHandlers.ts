@@ -506,13 +506,8 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
         demand.demand_id,
         execution.execution_id
       );
-      const currentFinding = {
-        subgoal_id: completion.finding.subgoal_id,
-        subgoal_title: completion.finding.subgoal_title,
-        claimed_outcome: completion.finding.claimed_outcome,
-        compressed_history: completion.finding.compressed_history,
-        captured_at: completion.finding.captured_at
-      };
+      // 直接转引用，避免漏掉 ReconFinding 上未来新增的字段（之前 rebuild 漏了 failed）。
+      const currentFinding = completion.finding;
       const freshDemand = await ctx.repositories.demands.getById(demand.demand_id);
       const existingBuffer = Array.isArray(freshDemand?.metadata?.recon_findings_buffer)
         ? (freshDemand!.metadata!.recon_findings_buffer as Array<Record<string, unknown>>)
@@ -553,35 +548,46 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
         });
 
         // reconciliation 已经决定好下游路径,这里只查路由表 publish 对应事件。
-        if (completion.nextStep === "clarifier_feedback") {
-          logger.info({
-            demandId: demand.demand_id,
-            subgoalId: subgoal.subgoal_id,
-            bufferedCount: existingBuffer.length + 1,
-            findingsLen: allFindings.length
-          }, "所有 recon 已完成,把累积发现回灌给 clarifier");
-          events.push(
-            createEvent(
-              EventType.USER_INPUT_RECEIVED,
-              {
-                input_text: allFindings,
-                input_kind: "recon_findings",
-                source: "scheduler",
-                session_tag: null
-              },
-              { demand_id: demand.demand_id }
-            )
-          );
-        } else {
-          // nextStep === "planner_replan"
-          logger.info({
-            demandId: demand.demand_id,
-            subgoalId: subgoal.subgoal_id,
-            bufferedCount: existingBuffer.length + 1
-          }, "所有 recon 已完成,触发 planner 重新规划");
-          events.push(
-            createEvent(EventType.REPLAN_REQUESTED, { reason: "recon_completed" as EventReason }, { demand_id: demand.demand_id })
-          );
+        // 用 switch 而不是 if/else，TypeScript 会在 ReconNextStep 加新值时报编译错误，
+        // 不会像之前 isReconReplan 那样静默走错路。
+        switch (completion.nextStep) {
+          case "clarifier_feedback": {
+            logger.info({
+              demandId: demand.demand_id,
+              subgoalId: subgoal.subgoal_id,
+              bufferedCount: existingBuffer.length + 1,
+              findingsLen: allFindings.length
+            }, "所有 recon 已完成，把累积发现回灌给 clarifier");
+            events.push(
+              createEvent(
+                EventType.USER_INPUT_RECEIVED,
+                {
+                  input_text: allFindings,
+                  input_kind: "recon_findings",
+                  source: "scheduler",
+                  session_tag: null
+                },
+                { demand_id: demand.demand_id }
+              )
+            );
+            break;
+          }
+          case "planner_replan": {
+            logger.info({
+              demandId: demand.demand_id,
+              subgoalId: subgoal.subgoal_id,
+              bufferedCount: existingBuffer.length + 1
+            }, "所有 recon 已完成，触发 planner 重新规划");
+            events.push(
+              createEvent(EventType.REPLAN_REQUESTED, { reason: "recon_completed" as EventReason }, { demand_id: demand.demand_id })
+            );
+            break;
+          }
+          default: {
+            // 编译期穷举校验：如果 ReconNextStep 加了新值，这里 TS 会报 "Type 'X' is not assignable to type 'never'"。
+            const _exhaustive: never = completion.nextStep;
+            throw new Error(`Unhandled ReconNextStep: ${JSON.stringify(_exhaustive)}`);
+          }
         }
       }
     } else {
@@ -592,7 +598,7 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
         verifiedStatus: verification.verified_status
       }, "非 recon 的隐式重新规划");
       events.push(
-        createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" as EventReason }, { demand_id: demand.demand_id })
+        createEvent(EventType.REPLAN_REQUESTED, { reason: "replan_after_result" }, { demand_id: demand.demand_id })
       );
     }
   } else if (outcome.missionCompleted) {
