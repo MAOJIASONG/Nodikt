@@ -28,6 +28,7 @@ import {
   WorkerResult,
   nowIso
 } from "../../../domain/index.js";
+import { tryTransition, DEMAND_TRANSITIONS } from "../../scheduler/handlers/stateMachine.js";
 
 /**
  * 编译期穷举校验 —— 调用方在 switch 的 default 分支传入 `value: never`。
@@ -85,6 +86,31 @@ export interface ReconCompletionOutcome {
 }
 
 export class ReconciliationService {
+  /**
+   * 计算 demand 的目标 state，在写入前用 tryTransition 校验。
+   * 非法时 fallback：保持 current state/phase 不动，并在 outcome 上打 transition_skipped 标记。
+   *
+   * 之前 reconcile() 直接赋值 demand.state，下游 upsert 路径如果撞到 assertTransition 抛错，
+   * 异常会一路冒到 EventBus（T2 已在 EventBus 兜底转 HANDLER_FAILED，但更好是源头不抛）。
+   * 这个 helper 把"非法转换"变成可观察的 outcome：状态保持 + replanRequested=true 让 ops/clarifier 接手。
+   */
+  private safeTransitionDemand(
+    current: Demand,
+    targetState: DemandState,
+    targetPhase: DemandPhase
+  ): { state: DemandState; current_phase: DemandPhase; skipped: boolean; skipReason?: string } {
+    const result = tryTransition("demand", current.state, targetState, DEMAND_TRANSITIONS);
+    if (result.ok) {
+      return { state: targetState, current_phase: targetPhase, skipped: false };
+    }
+    return {
+      state: current.state,
+      current_phase: current.current_phase,
+      skipped: true,
+      skipReason: result.reason
+    };
+  }
+
   /**
    * 决定 recon subgoal 完成后的下游路径 + 构造 finding。
    * 仅在 input.subgoal.kind === "recon" 时调用。
@@ -203,8 +229,9 @@ export class ReconciliationService {
             reconCompletion: this.buildReconCompletion(input)
           };
         }
-        demand.state = DemandState.ACTIVE;
-        demand.current_phase = DemandPhase.EXECUTION;
+        const t = this.safeTransitionDemand(demand, DemandState.ACTIVE, DemandPhase.EXECUTION);
+        demand.state = t.state;
+        demand.current_phase = t.current_phase;
         demand.progress_percent = Math.min(90, demand.progress_percent + 35);
         subgoal.state = SubgoalState.READY;
         execution.state = ExecutionState.DONE;
@@ -233,8 +260,9 @@ export class ReconciliationService {
             reconCompletion: this.buildReconCompletion(input)
           };
         }
-        demand.state = DemandState.PENDING_DECISION;
-        demand.current_phase = DemandPhase.REVIEW;
+        const t = this.safeTransitionDemand(demand, DemandState.PENDING_DECISION, DemandPhase.REVIEW);
+        demand.state = t.state;
+        demand.current_phase = t.current_phase;
         subgoal.state = SubgoalState.BLOCKED;
         execution.state = ExecutionState.FAILED;
         execution.completed_at = timestamp;
@@ -262,8 +290,9 @@ export class ReconciliationService {
             reconCompletion: this.buildReconCompletion(input)
           };
         }
-        demand.state = DemandState.FAILED;
-        demand.current_phase = DemandPhase.FAILED;
+        const t = this.safeTransitionDemand(demand, DemandState.FAILED, DemandPhase.FAILED);
+        demand.state = t.state;
+        demand.current_phase = t.current_phase;
         subgoal.state = SubgoalState.FAILED;
         execution.state = ExecutionState.FAILED;
         execution.completed_at = timestamp;
