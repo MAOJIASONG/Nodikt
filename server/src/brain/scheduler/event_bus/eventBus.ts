@@ -17,10 +17,13 @@
  * - 事件发布是调度流程核心入口，处理器异常应被清晰记录和暴露。
  * - 事件载荷结构应与 domain/types 和 validators 保持一致。
  */
-import { EventType, SchedulerEvent } from "../../../domain/index.js";
+import { EventType, HandlerResult, SchedulerEvent, createEvent, nowIso } from "../../../domain/index.js";
+import { createLogger } from "../../../logger.js";
 import { RepositoryBundle } from "../../store/repositories/index.js";
 import { applySessionEvent } from "../session/sessionReducer.js";
 import { HandlerContext, HandlerMap } from "./types.js";
+
+const logger = createLogger("event_bus");
 
 const TRANSIENT_EVENT_TYPES = new Set<EventType>([
   EventType.WORKER_HEARTBEAT_RECEIVED,
@@ -63,7 +66,48 @@ export class EventBus {
       publish: this.publish.bind(this)
     };
 
-    const result = await handler(event, ctx);
+    let result: HandlerResult;
+    try {
+      result = await handler(event, ctx);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      // 关键防御：把 handler 内的 throw 转化为 publish HANDLER_FAILED 事件。
+      // 之前 throw 会一路冒到 EventBus 之外（ops monitor 的顶层 catch / express middleware），
+      // 沉默吞掉后 demand 卡死。现在变成可观察的事件：UI / ops monitor / 测试都能看到。
+      logger.error(
+        {
+          err,
+          sourceEventType: event.event_type,
+          demandId: event.demand_id,
+          subgoalId: event.subgoal_id,
+          executionId: event.execution_id
+        },
+        "Handler threw — converting to HANDLER_FAILED event"
+      );
+
+      const failureEvent = createEvent(
+        EventType.HANDLER_FAILED,
+        {
+          source_event_type: String(event.event_type),
+          message: err.message,
+          error_name: err.name,
+          failed_at: nowIso()
+        },
+        {
+          demand_id: event.demand_id,
+          subgoal_id: event.subgoal_id,
+          execution_id: event.execution_id,
+          worker_id: event.worker_id,
+          decision_id: event.decision_id
+        }
+      );
+
+      // 直接 persist + broadcast，不通过 publish() 递归（避免 HANDLER_FAILED 的 handler 又 throw 形成循环）。
+      await this.repositories.events.upsert(failureEvent as unknown as SchedulerEvent<Record<string, unknown>>);
+      await ctx.wsBroadcaster.broadcastEvent(failureEvent);
+      return;
+    }
+
     await applySessionEvent(event, this.repositories);
     await ctx.wsBroadcaster.broadcastEvent(event);
 
