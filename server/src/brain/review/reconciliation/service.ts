@@ -29,6 +29,18 @@ import {
   nowIso
 } from "../../../domain/index.js";
 
+/**
+ * 编译期穷举校验 —— 调用方在 switch 的 default 分支传入 `value: never`。
+ * 如果 VerificationStatus（或别的 union/enum）加新值而 switch 没覆盖，
+ * TS 编译会报错，不会像之前那样静默 fall through 到错误分支。
+ *
+ * 注意：这是工程防御 —— "Type 'X' is not assignable to type 'never'" 这种编译错误
+ * 强制让加新枚举值的人显式覆盖每个 switch。
+ */
+function assertExhaustive(value: never, context: string): never {
+  throw new Error(`assertExhaustive: unhandled ${context} value ${JSON.stringify(value)}`);
+}
+
 export interface ReconciliationOutcome {
   demand: Demand;
   subgoal: SubgoalContract;
@@ -136,7 +148,7 @@ export class ReconciliationService {
     const isReconSubgoal = input.subgoal.kind === "recon";
 
     switch (input.verification.verified_status) {
-      case VerificationStatus.VERIFIED_DONE:
+      case VerificationStatus.VERIFIED_DONE: {
         if (isReconSubgoal) {
           // recon 既可能服务于 plan 阶段（OO 已存在），也可能服务于 clarification 阶段（OO=null）。
           // - OO 存在：把 demand 推到 ACTIVE/PLANNING，后续走 REPLAN_REQUESTED 让 planner 重新生成 build plan。
@@ -173,7 +185,8 @@ export class ReconciliationService {
           missionCompleted: true,
           replanRequested: false
         };
-      case VerificationStatus.PARTIAL:
+      }
+      case VerificationStatus.PARTIAL: {
         // recon-in-clarification 部分满足：跟 UNVERIFIABLE/FAILED 同款 —— 不能动 demand state
         // （PENDING_ALIGNMENT → ACTIVE 状态机非法），由 reviewHandlers 的 barrier 把这条 recon 算成
         // "已完成"流转给 clarifier，让它根据现有发现继续决定下一步（NEEDS_RECON / NEEDS_CLARIFICATION / READY）。
@@ -203,7 +216,8 @@ export class ReconciliationService {
           missionCompleted: false,
           replanRequested: true
         };
-      case VerificationStatus.UNVERIFIABLE:
+      }
+      case VerificationStatus.UNVERIFIABLE: {
         // recon-in-clarification 验证不过：不能动 demand state（PENDING_ALIGNMENT→PENDING_DECISION 非法），
         // 也不要弹用户决策卡——本来 recon 失败就该静默退化，由 barrier + clarifier 继续推进。
         if (isReconSubgoal && !input.demand.operational_objective) {
@@ -233,8 +247,8 @@ export class ReconciliationService {
           decisionReasonCode: DecisionReasonCode.UNVERIFIABLE_RESULT,
           decisionPrompt: input.verification.notes
         };
-      case VerificationStatus.FAILED:
-      default:
+      }
+      case VerificationStatus.FAILED: {
         if (isReconSubgoal && !input.demand.operational_objective) {
           subgoal.state = SubgoalState.FAILED;
           execution.state = ExecutionState.FAILED;
@@ -262,6 +276,9 @@ export class ReconciliationService {
           decisionReasonCode: DecisionReasonCode.BLOCKED,
           decisionPrompt: input.workerResult.blocker_reason?.message ?? "Execution failed"
         };
+      }
+      default:
+        return assertExhaustive(input.verification.verified_status, "VerificationStatus");
     }
   }
 }
