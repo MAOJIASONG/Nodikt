@@ -503,13 +503,20 @@ export async function onVerificationCompleted(event: SchedulerEvent, ctx: Handle
     // 等最后一个 recon 完成才一次性回灌
     // recon 失败（FAILED / UNVERIFIABLE）的 subgoal 也参与 barrier：把它当成一条"没结果"的 finding
     // 计数进 barrier，让其他完成的 recon 能正常汇总；只有这样 clarifier 才能拿到 1/2 有效发现继续推进。
+    // 包含 PARTIAL —— recon-in-clarification 的 PARTIAL 意味着 worker 拿到了部分有用 finding（典型：
+    // 4 个 criteria 满足 3 个），应该回流给 clarifier 让它根据已有信息推进，而不是误判成"任务还没完成"
+    // 走 REPLAN_REQUESTED → onReplanRequested 在 OO=null 时拒绝 → 卡死。
     const isReconReplan = subgoal.kind === "recon"
       && (verification.verified_status === "VERIFIED_DONE"
+          || verification.verified_status === "PARTIAL"
           || verification.verified_status === "FAILED"
           || verification.verified_status === "UNVERIFIABLE");
 
     if (isReconReplan) {
-      const reconFailed = verification.verified_status !== "VERIFIED_DONE";
+      // PARTIAL 当作成功 finding 传给 clarifier —— worker 真的拿到了部分可用信息（典型：4 个 criteria
+      // 满足 3 个），claimed_outcome 有内容，不该标 [recon FAILED]。只有 FAILED / UNVERIFIABLE 真没用。
+      const reconFailed = verification.verified_status === "FAILED"
+        || verification.verified_status === "UNVERIFIABLE";
       const activeReconExecutions = await listActiveOtherReconExecutions(
         ctx,
         demand.demand_id,
