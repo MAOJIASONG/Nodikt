@@ -1738,6 +1738,29 @@ small,
 .pill-accent { color: #ffd99a; border-color: rgba(243, 165, 54, 0.55); background: rgba(243, 165, 54, 0.08); }
 .pill-neutral { color: var(--muted-2); }
 
+.demand-brain-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 90, 90, 0.4);
+  border-radius: var(--radius-md);
+  background: rgba(239, 90, 90, 0.08);
+}
+.demand-brain-error-msg {
+  margin: 0;
+  color: #ffbbbb;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.demand-brain-error-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .subgoal-assignment-badge.is-unassigned {
   color: var(--muted-2);
 }

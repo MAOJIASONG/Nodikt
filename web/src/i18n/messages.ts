@@ -47,6 +47,8 @@ export const messages: Record<Language, MessageDict> = {
 
     // demand detail hero
     "demand.detail.label": "Demand",
+    "demand.detail.brain_error_label": "Brain error",
+    "demand.detail.brain_error_retry": "Auto-retrying… check model settings / network if this persists.",
     "demand.detail.opening": "Opening demand...",
     "demand.detail.opening_desc": "Loading the demand state, alignment result, and latest planning snapshot.",
     "demand.detail.status": "Status",
@@ -486,6 +488,8 @@ export const messages: Record<Language, MessageDict> = {
 
     // demand detail hero
     "demand.detail.label": "需求",
+    "demand.detail.brain_error_label": "Brain 故障",
+    "demand.detail.brain_error_retry": "正在自动重试……若持续出现，请检查模型设置 / 网络。",
     "demand.detail.opening": "正在打开需求…",
     "demand.detail.opening_desc": "正在加载需求状态、澄清结果和最新规划快照。",
     "demand.detail.status": "状态",

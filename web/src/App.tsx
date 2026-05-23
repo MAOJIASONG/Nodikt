@@ -756,9 +756,23 @@ export function App() {
     return demand.state === "PENDING_ALIGNMENT" || Boolean(demand.metadata?.clarification_question);
   }
 
+  function demandBrainError(demand: Demand): { message?: string; error_name?: string; source?: string; at?: string } | null {
+    const raw = demand.metadata?.brain_error;
+    return raw && typeof raw === "object" ? (raw as { message?: string; error_name?: string; source?: string; at?: string }) : null;
+  }
+  function demandHasBrainError(demand: Demand): boolean {
+    return demandBrainError(demand) !== null;
+  }
+
   function demandLampTone(demand: Demand): "success" | "warning" | "danger" | "neutral" {
     if (demand.state === "COMPLETED") {
       return "success";
+    }
+    // brain LLM（planner/clarifier）故障留下的非终态错误标记 → 红灯。
+    // demand 仍在自动重试，但用户应能立刻看到"出问题了"，而不是一直绿灯。
+    // 后端在 planner/clarifier 下一次成功时自动清除该标记。
+    if (demandHasBrainError(demand)) {
+      return "danger";
     }
     if (["FAILED", "CANCELLED"].includes(demand.state)) {
       return "danger";
@@ -1929,6 +1943,13 @@ export function App() {
                           <strong>{openDecisionCount}</strong>
                         </div>
 	                      </div>
+	                      {demandBrainError(detail.demand) ? (
+	                        <div className="demand-brain-error" role="alert">
+	                          <span className="pill pill-danger">{t("demand.detail.brain_error_label")}</span>
+	                          <p className="demand-brain-error-msg">{demandBrainError(detail.demand)?.message}</p>
+	                          <small className="demand-brain-error-hint">{t("demand.detail.brain_error_retry")}</small>
+	                        </div>
+	                      ) : null}
 	                      <div className="detail-hero-actions">
 	                        {detail.demand.state === "PAUSED" ? (
 	                          <button
