@@ -24,6 +24,7 @@ import {
   DecisionAction,
   DecisionReasonCode,
   DecisionRequest,
+  DecisionStatus,
   Demand,
   DemandPhase,
   DemandState,
@@ -1118,6 +1119,16 @@ export async function onDecisionResponseReceived(event: SchedulerEvent, ctx: Han
   const demand = await ctx.repositories.demands.getById(event.demand_id ?? "");
   if (!decision || !demand) {
     logger.warn({ demandId: event.demand_id, decisionId: event.decision_id }, "忽略决策响应，因为未找到决策或需求");
+    return {};
+  }
+  if (decision.status !== DecisionStatus.OPEN) {
+    // 守卫：决策已被解决 / 取代 / 取消（例如重复提交，或回复了一张已被新计划 EXPIRED 的旧 plan-review 卡）。
+    // 直接忽略，避免对 stale 决策再触发一轮 replan 造成级联重复。前端会在下次 demand_view 刷新后看到卡消失。
+    logger.info({
+      demandId: demand.demand_id,
+      decisionId: decision.decision_id,
+      status: decision.status
+    }, "忽略对非 OPEN 决策的响应（stale / 已取代 / 重复提交）");
     return {};
   }
   const hasActiveExecutions = await demandHasActiveExecutions(demand.demand_id, ctx);

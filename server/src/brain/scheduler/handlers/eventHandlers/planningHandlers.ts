@@ -22,6 +22,7 @@ import {
   createEvent,
   DecisionAction,
   DecisionReasonCode,
+  DecisionStatus,
   DemandPhase,
   DemandState,
   EventReason,
@@ -285,6 +286,29 @@ export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext
 
   if (!needsReview) {
     return {};
+  }
+
+  // 去重不变式：一个 demand 同时最多一张 OPEN 的 plan-review 卡。
+  // 并发的 REPLAN_REQUESTED 可能生成多个 plan → 多张卡，用户回复哪张都会乱。
+  // 创建新卡前，把该 demand 既有的 OPEN plan-review 全部标 EXPIRED（被新计划取代）。
+  const allDecisions = await ctx.repositories.decisions.list();
+  const stalePlanReviews = allDecisions.filter((d) =>
+    d.demand_id === demand.demand_id
+    && d.reason_code === DecisionReasonCode.PLAN_REVIEW
+    && d.status === DecisionStatus.OPEN
+  );
+  for (const stale of stalePlanReviews) {
+    await ctx.repositories.decisions.upsert({
+      ...stale,
+      status: DecisionStatus.EXPIRED,
+      resolved_at: nowIso(),
+      metadata: {
+        ...(stale.metadata ?? {}),
+        superseded_by_plan_round: planPayload.planning_round ?? null,
+        superseded_at: nowIso()
+      }
+    });
+    logger.info({ demandId: demand.demand_id, supersededDecisionId: stale.decision_id }, "新计划取代旧的 OPEN plan-review 决策");
   }
 
   // 创建 PLAN_REVIEW 决策，让 demand 切到 PENDING_DECISION 暂停 subgoal 派发
