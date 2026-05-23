@@ -393,7 +393,7 @@ export function App() {
   const openDecisionCount = detail?.decisions.filter((item) => item.status === "OPEN").length ?? 0;
   const openDecisions = detail?.decisions.filter((item) => item.status === "OPEN") ?? [];
 
-  type ActionRequiredKind = "decision" | "alignment" | "blocked";
+  type ActionRequiredKind = "decision" | "alignment" | "blocked" | "fault";
   type ActionRequiredEntry = {
     demand: Demand;
     kind: ActionRequiredKind;
@@ -403,6 +403,16 @@ export function App() {
 
   const actionRequiredEntries: ActionRequiredEntry[] = demands
     .map<ActionRequiredEntry | null>((demand) => {
+      // fault 优先于其它分类：brain LLM 坏了不是"澄清"也不是"决策"，用户改 Settings 才能救回来。
+      // 不放在 alignment 后面，否则 PENDING_ALIGNMENT + brain_error 的情况会被先吞成"Clarify"。
+      if (demandHasBrainError(demand) && demand.state !== "COMPLETED") {
+        return {
+          demand,
+          kind: "fault",
+          label: t("action_required.label.fault"),
+          hint: t("action_required.hint.fault")
+        };
+      }
       if (demand.state === "PENDING_DECISION" || demand.active_decision_id) {
         return {
           demand,

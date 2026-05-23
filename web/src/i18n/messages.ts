@@ -241,9 +241,11 @@ export const messages: Record<Language, MessageDict> = {
     "action_required.label.decision": "Decision",
     "action_required.label.blocked": "Blocked",
     "action_required.label.clarify": "Clarify",
+    "action_required.label.fault": "Fault",
     "action_required.hint.decision": "Awaiting your decision",
     "action_required.hint.blocked": "Execution is blocked, intervention required",
     "action_required.hint.clarify": "Clarification reply needed",
+    "action_required.hint.fault": "Brain LLM unavailable — fix Settings → models, then Retry",
 
     // time formatters
     "time.just_started": "Just started",
@@ -689,9 +691,11 @@ export const messages: Record<Language, MessageDict> = {
     "action_required.label.decision": "决策",
     "action_required.label.blocked": "受阻",
     "action_required.label.clarify": "澄清",
+    "action_required.label.fault": "故障",
     "action_required.hint.decision": "等待你的决策",
     "action_required.hint.blocked": "执行受阻，需介入",
     "action_required.hint.clarify": "需要澄清回复",
+    "action_required.hint.fault": "Brain LLM 不可用 —— 去 设置 → 模型 修配置后点 Retry",
 
     // time formatters
     "time.just_started": "刚开始",
