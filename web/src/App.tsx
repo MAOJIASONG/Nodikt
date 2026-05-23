@@ -460,6 +460,12 @@ export function App() {
   const workerNameById = new Map(
     workers.map((worker) => [worker.worker_id, worker.name])
   );
+  // demand 级聚合错误：用 subgoalStage 判定 "failed"，与计划面板的状态灯保持同一套口径
+  const failedSubgoals = (detail?.subgoals ?? []).filter((sg) => {
+    const exec = executionBySubgoalId.get(sg.subgoal_id);
+    const decision = latestDecisionBySubgoalId.get(sg.subgoal_id);
+    return subgoalStage(sg.state, exec, decision) === "failed";
+  });
 
   function openSubgoalDialog(subgoalId: string, mode: "success" | "failed" | "issue") {
     if (subgoalDialogCloseTimerRef.current) {
@@ -2231,6 +2237,64 @@ export function App() {
 	                            </div>
 	                          </article>
 	                        ))}
+	                      </div>
+	                    </section>
+	                  ) : null}
+
+	                  {failedSubgoals.length > 0 ? (
+	                    <section className="panel detail-section error-summary-panel">
+	                      <div className="panel-heading">
+	                        <div>
+	                          <p className="eyebrow">{t("error_summary.eyebrow")}</p>
+	                          <h2>{t("error_summary.title_count", { count: failedSubgoals.length })}</h2>
+	                        </div>
+	                      </div>
+	                      <div className="list-stack">
+	                        {failedSubgoals.map((sg) => {
+	                          const exec = executionBySubgoalId.get(sg.subgoal_id) ?? null;
+	                          const decision = latestDecisionBySubgoalId.get(sg.subgoal_id) ?? null;
+	                          const workerResult = exec
+	                            ? latestWorkerResultByExecutionId.get(exec.execution_id) ?? null
+	                            : null;
+	                          const conversation = decision?.metadata?.conversation_history ?? [];
+	                          return (
+	                            <article key={sg.subgoal_id} className="decision-card error-summary-item">
+	                              <div className="error-summary-head">
+	                                <small className="pill pill-danger">{sg.state}</small>
+	                                <button
+	                                  type="button"
+	                                  className="ghost-button error-summary-title"
+	                                  onClick={() => openSubgoalDialog(sg.subgoal_id, "failed")}
+	                                >
+	                                  {sg.title}
+	                                </button>
+	                              </div>
+	                              <pre className="error-summary-detail">
+	                                {rawSubgoalIssueText(exec, workerResult, decision)}
+	                              </pre>
+	                              {conversation.length > 0 ? (
+	                                <details className="error-summary-conversation">
+	                                  <summary>{t("error_summary.show_conversation")}</summary>
+	                                  <div className="suggestion-dialogue">
+	                                    {conversation.map((message, index) => (
+	                                      <div
+	                                        key={`${message.created_at}-${index}`}
+	                                        className={`conversation-turn ${message.role === "assistant" ? "assistant" : "user"} suggestion-turn`}
+	                                      >
+	                                        <small>{message.role === "assistant" ? t("demand.detail.assistant") : t("common.you")}</small>
+	                                        {message.role === "assistant" ? (
+	                                          <p className="suggestion-message">{summarizeDecisionPrompt(message.content)}</p>
+	                                        ) : (
+	                                          <p>{message.content}</p>
+	                                        )}
+	                                      </div>
+	                                    ))}
+	                                  </div>
+	                                </details>
+	                              ) : null}
+	                            </article>
+	                          );
+	                        })}
 	                      </div>
 	                    </section>
 	                  ) : null}

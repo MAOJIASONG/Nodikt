@@ -98,6 +98,9 @@ export const messages: Record<Language, MessageDict> = {
     "plan_evolution.next_step_suggested": "Next step suggested: {step}",
 
     // human decision panel
+    "error_summary.eyebrow": "Errors",
+    "error_summary.title_count": "{count} issue(s) need attention",
+    "error_summary.show_conversation": "Show conversation",
     "decision.eyebrow": "Human Decision Panel",
     "decision.title_count": "{count} action required",
     "decision.waiting_on_you": "waiting on you",
@@ -534,6 +537,9 @@ export const messages: Record<Language, MessageDict> = {
     "plan_evolution.next_step_suggested": "建议下一步：{step}",
 
     // human decision panel
+    "error_summary.eyebrow": "错误",
+    "error_summary.title_count": "{count} 个问题待处理",
+    "error_summary.show_conversation": "查看对话流",
     "decision.eyebrow": "人工决策面板",
     "decision.title_count": "有 {count} 项待处理",
     "decision.waiting_on_you": "等你处理",
