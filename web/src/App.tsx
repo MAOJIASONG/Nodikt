@@ -2027,33 +2027,8 @@ export function App() {
 	                            {t("demand.detail.pause")}
 	                          </button>
 	                        )}
-	                        <button
-	                          type="button"
-	                          className="ghost-button interrupt-button"
-	                          title={t("demand.detail.interrupt_title")}
-	                          disabled={
-	                            controlSubmittingId === detail.demand.demand_id ||
-	                            runningExecutionCount === 0 ||
-	                            ["COMPLETED", "FAILED", "CANCELLED", "PAUSED"].includes(detail.demand.state)
-	                          }
-	                          onClick={() => {
-	                            const note = window.prompt(
-	                              t(runningExecutionCount === 1 ? "demand.detail.interrupt_prompt_one" : "demand.detail.interrupt_prompt_other", { count: runningExecutionCount }),
-	                              ""
-	                            );
-	                            if (note === null) {
-	                              return;
-	                            }
-	                            void controlDemand(detail.demand.demand_id, "interrupt", note.trim() || t("demand.detail.interrupt_default_note"));
-	                          }}
-	                        >
-	                          {controlSubmittingId === detail.demand.demand_id
-	                            ? t("common.sending")
-	                            : (runningExecutionCount > 0
-	                                ? t("demand.detail.interrupt_with_count", { count: runningExecutionCount })
-	                                : t("demand.detail.interrupt"))}
-	                        </button>
-	                        {/* 详情页头部原 "Cancel Demand" 按钮按 review #6 隐藏（后端 controlDemand cancel API 仍保留）。 */}
+	                        {/* 按 spec（任金诚）控制动作只保留 Pause/Resume + 取消任务两类，移除 Interrupt 按钮。
+	                            "暂停 + 改计划" 由 Pause → 主面板 plan-review 卡承担；后端 interrupt API 仍保留但前端不暴露。 */}
 	                        <button
 	                          type="button"
 	                          className="ghost-button danger-button"
