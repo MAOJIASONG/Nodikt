@@ -1782,7 +1782,18 @@ export function App() {
                     >
                       <span className="demand-link-copy">
                         <strong>{displayDemandTitle(demand)}</strong>
-                        <small>{demand.current_phase}</small>
+                        <small className="demand-link-meta">
+                          <span>{demand.current_phase}</span>
+                          {/* Claude-style 相对时间 chip —— 当 sidebar 里 demand 多/标题相近时，
+                              用"7m / 1h / 1d"做二次区分。绝对时间作为 title hover 兜底，
+                              复用顶部已有的 formatRelativeShort + time.* i18n（en/zh 都已定义）。 */}
+                          <span
+                            className="sidebar-demand-time"
+                            title={demand.updated_at ?? demand.created_at}
+                          >
+                            {formatRelativeShort(demand.updated_at ?? demand.created_at, Date.now(), t)}
+                          </span>
+                        </small>
                       </span>
                       <span
                         className={`demand-progress demand-progress-${indicator.tone}${indicator.done ? " is-done" : ""}`}

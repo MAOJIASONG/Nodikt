@@ -972,6 +972,31 @@ small,
   text-overflow: ellipsis;
 }
 
+/* demand 列表的"phase + 相对时间"副标行 —— 让小字段在一行里左右排开，
+   相对时间靠右、用 muted 色，跟 Claude session 列表的视觉密度对齐。 */
+.demand-link-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.demand-link-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-demand-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted, rgba(255, 255, 255, 0.45));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
 .dashboard-lamp,
 .worker-lamp,
 .status-dot {
@@ -1796,7 +1821,10 @@ small,
 }
 
 .create-modal.is-expanded {
-  width: min(960px, calc(100vw - 40px));
+  /* 之前是 min(960px, ...) —— 在 1080p/1440p 屏上实际只占 50% 左右，
+     用户反馈"窗口太小"，把展开模式按 70vw 起步打开（仍兜底 960px），
+     给 demand 起草大段需求留出空间。 */
+  width: min(max(70vw, 960px), calc(100vw - 40px));
   max-height: calc(100vh - 40px);
 }
 
@@ -1811,7 +1839,9 @@ small,
 }
 
 .create-modal.is-expanded .textarea-expandable textarea {
-  min-height: min(480px, calc(100vh - 320px));
+  /* 展开态 textarea 至少 60vh —— 让起草长 demand 时不用频繁滚 textarea 内部，
+     calc 兜底避免 viewport 极矮时被 modal chrome 挤出可视区。 */
+  min-height: min(max(60vh, 480px), calc(100vh - 200px));
 }
 
 .textarea-expand-toggle {
