@@ -16,16 +16,18 @@
  * - settings 是单例配置，保存时需保留未知兼容字段时应谨慎处理。
  * - 模型配置、工作区路径等关键字段变更会影响运行时行为。
  */
-import { ZodType } from "zod";
+import { ZodType, ZodTypeDef } from "zod";
 
 import { Settings } from "../../../domain/types.js";
 import { JsonFileStore } from "./fileStore.js";
 
+// E-T1：放宽 Input 泛型，让 settingsSchema 中带 .default() 的字段（如 llm_timeout_seconds）
+// 在 input 类型里可缺省。Output 仍是完整 Settings。
 export class SettingsRepository {
   constructor(
     private readonly store: JsonFileStore,
     private readonly fileName: string,
-    private readonly validator?: ZodType<Settings>
+    private readonly validator?: ZodType<Settings, ZodTypeDef, any>
   ) {}
 
   /**

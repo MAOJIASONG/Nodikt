@@ -31,7 +31,8 @@
   "runtime": {
     "heartbeat_interval_seconds": 30,
     "execution_timeout_seconds": 600,
-    "max_retry_count": 1
+    "max_retry_count": 1,
+    "llm_timeout_seconds": 60
   },
   "worker_policy": {
     "skill_install_scope": "workspace_only"

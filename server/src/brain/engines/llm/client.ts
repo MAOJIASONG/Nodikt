@@ -58,20 +58,40 @@ export class LlmClient {
     const config = this.getConfig(input.settings, input.role);
     this.validateConfig(config);
     const provider = config.provider.toLowerCase();
+    // E-T1：每次调用从 settings.runtime.llm_timeout_seconds 读取超时，便于慢速国产模型在 UI 上调高；
+    // 缺省/解析失败时回落到构造函数注入的 timeoutMs（保持向后兼容）。
+    const timeoutMs = this.resolveTimeoutMs(input.settings);
 
     // 三种支持的 LLM 协议入口，按 provider 字段路由：
     //   - "anthropic" / "anthropic-messages" 或 model 含 "claude" → Anthropic Messages API (/v1/messages)
     //   - "openai-responses" / "responses" → OpenAI Responses API (/v1/responses)，推荐给 gpt-5 / o1 / o3 等 reasoning models
     //   - 其它（含 "openai" / "openai-compatible" / MiniMax / DeepSeek / Qwen / SiliconFlow 等兼容服务）→ OpenAI Chat Completions (/v1/chat/completions)
     if (provider.includes("anthropic") || config.model.toLowerCase().includes("claude")) {
-      return this.callAnthropic(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
+      return this.callAnthropic(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens, timeoutMs);
     }
 
     if (provider.includes("responses") || provider === "openai-responses") {
-      return this.callOpenAiResponses(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
+      return this.callOpenAiResponses(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens, timeoutMs);
     }
 
-    return this.callOpenAiCompatible(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens);
+    return this.callOpenAiCompatible(config, input.systemPrompt, input.userPrompt, input.temperature, input.maxTokens, timeoutMs);
+  }
+
+  /**
+   * 函数作用：从设置中解析单次 LLM 调用的超时毫秒数。
+   *
+   * 参数说明：
+   * - settings：系统设置；若缺失 runtime.llm_timeout_seconds 则回退到构造函数默认值。
+   *
+   * 返回值：
+   * - number：本次调用使用的超时毫秒数（>=1000ms）。
+   */
+  private resolveTimeoutMs(settings: Settings | undefined): number {
+    const seconds = settings?.runtime?.llm_timeout_seconds;
+    if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
+      return Math.max(1, Math.floor(seconds)) * 1000;
+    }
+    return this.timeoutMs;
   }
 
   /**
@@ -119,7 +139,8 @@ export class LlmClient {
     systemPrompt: string,
     userPrompt: string,
     temperature = 0.1,
-    maxTokens = 4000
+    maxTokens = 4000,
+    timeoutMs?: number
   ): Promise<string> {
     let response: any;
     try {
@@ -138,7 +159,8 @@ export class LlmClient {
           temperature,
           max_tokens: maxTokens,
           response_format: { type: "json_object" }
-        }
+        },
+        timeoutMs
       );
     } catch (error) {
       const message = String((error as Error).message ?? "");
@@ -162,7 +184,8 @@ export class LlmClient {
           ],
           temperature,
           max_tokens: maxTokens
-        }
+        },
+        timeoutMs
       );
     }
 
@@ -178,7 +201,8 @@ export class LlmClient {
     systemPrompt: string,
     userPrompt: string,
     temperature = 0.1,
-    maxTokens = 4000
+    maxTokens = 4000,
+    timeoutMs?: number
   ): Promise<string> {
     const response = await this.postJson(
       `${config.base_url.replace(/\/$/, "")}/messages`,
@@ -193,7 +217,8 @@ export class LlmClient {
         messages: [{ role: "user", content: userPrompt }],
         temperature,
         max_tokens: maxTokens
-      }
+      },
+      timeoutMs
     );
 
     const parts = Array.isArray(response?.content)
@@ -232,7 +257,8 @@ export class LlmClient {
     systemPrompt: string,
     userPrompt: string,
     temperature = 0.1,
-    maxTokens = 4000
+    maxTokens = 4000,
+    timeoutMs?: number
   ): Promise<string> {
     const baseBody: Record<string, unknown> = {
       model: config.model,
@@ -255,7 +281,8 @@ export class LlmClient {
         {
           ...baseBody,
           text: { format: { type: "json_object" } }
-        }
+        },
+        timeoutMs
       );
     } catch (error) {
       const message = String((error as Error).message ?? "");
@@ -270,7 +297,8 @@ export class LlmClient {
           Authorization: `Bearer ${config.api_key}`,
           "Content-Type": "application/json"
         },
-        baseBody
+        baseBody,
+        timeoutMs
       );
     }
 
@@ -320,7 +348,8 @@ export class LlmClient {
   private async postJson(
     url: string,
     headers: Record<string, string>,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
+    timeoutMsOverride?: number
   ): Promise<any> {
     const msgs = body.messages as Array<{ role: string; content: string }> | undefined;
     const sysTxt = typeof body.system === "string"
@@ -343,7 +372,10 @@ export class LlmClient {
     }, "→ LLM 请求");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const effectiveTimeoutMs = typeof timeoutMsOverride === "number" && Number.isFinite(timeoutMsOverride) && timeoutMsOverride > 0
+      ? timeoutMsOverride
+      : this.timeoutMs;
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     const startMs = Date.now();
     try {
       const response = await fetch(url, {

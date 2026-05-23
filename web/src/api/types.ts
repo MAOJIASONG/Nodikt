@@ -252,6 +252,7 @@ export type Settings = {
     heartbeat_interval_seconds: number;
     execution_timeout_seconds: number;
     max_retry_count: number;
+    llm_timeout_seconds: number;
   };
   worker_policy: {
     skill_install_scope: string;

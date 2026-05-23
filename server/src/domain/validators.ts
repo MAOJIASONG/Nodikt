@@ -228,7 +228,8 @@ export const settingsSchema = z.object({
   runtime: z.object({
     heartbeat_interval_seconds: z.number().int().positive(),
     execution_timeout_seconds: z.number().int().positive(),
-    max_retry_count: z.number().int().nonnegative()
+    max_retry_count: z.number().int().nonnegative(),
+    llm_timeout_seconds: z.number().int().positive().default(60)
   }),
   worker_policy: z.object({
     skill_install_scope: z.enum(["workspace_only", "disabled"])

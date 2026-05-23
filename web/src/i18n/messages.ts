@@ -827,6 +827,7 @@ export const messages: Record<Language, MessageDict> = {
     "settings.brain.runtime.heartbeat": "心跳间隔（秒）",
     "settings.brain.runtime.timeout": "执行超时（秒）",
     "settings.brain.runtime.retry": "最大重试次数",
+    "settings.brain.runtime.llm_timeout": "LLM 调用超时（秒）",
     "settings.brain.snapshot.title": "当前快照",
 
     // demand detail

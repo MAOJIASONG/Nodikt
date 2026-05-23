@@ -51,7 +51,8 @@ const EMPTY_SETTINGS: Settings = {
   runtime: {
     heartbeat_interval_seconds: 30,
     execution_timeout_seconds: 600,
-    max_retry_count: 1
+    max_retry_count: 1,
+    llm_timeout_seconds: 60
   },
   worker_policy: {
     skill_install_scope: "workspace_only"
@@ -3488,6 +3489,15 @@ export function App() {
                           type="number"
                           value={settingsDraft.runtime.max_retry_count}
                           onChange={(event) => updateRuntime("max_retry_count", Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>{t("settings.brain.runtime.llm_timeout")}</span>
+                        <input
+                          type="number"
+                          min={5}
+                          value={settingsDraft.runtime.llm_timeout_seconds}
+                          onChange={(event) => updateRuntime("llm_timeout_seconds", Number(event.target.value))}
                         />
                       </label>
                     </section>
