@@ -756,7 +756,10 @@ export function App() {
     }
 
     if (["ACTIVE", "READY"].includes(demand.state) || ["PLANNING", "EXECUTION", "EXECUTING"].includes(demand.current_phase)) {
-      return { tone: "success", progress: 72, done: false };
+      // 进行中（含 recon 完成后等下一轮 plan 的窗口）用 info(蓝)而非 success(绿)。
+      // 绿色专门留给 COMPLETED —— 否则 recon subgoal 成功后 demand 进 ACTIVE/PLANNING，
+      // 绿灯+绿进度条会让用户误以为整个任务已经完成。
+      return { tone: "info", progress: 72, done: false };
     }
 
     return { tone: "neutral", progress: 26, done: false };
@@ -782,7 +785,7 @@ export function App() {
     return demandBrainError(demand) !== null;
   }
 
-  function demandLampTone(demand: Demand): "success" | "warning" | "danger" | "neutral" {
+  function demandLampTone(demand: Demand): "success" | "warning" | "danger" | "info" | "neutral" {
     if (demand.state === "COMPLETED") {
       return "success";
     }
@@ -799,7 +802,10 @@ export function App() {
       return "warning";
     }
     if (["ACTIVE", "READY"].includes(demand.state)) {
-      return "success";
+      // 进行中用 info(蓝)而非 success(绿)。绿灯只代表 COMPLETED ——
+      // recon subgoal 成功后 demand 短暂进 ACTIVE/PLANNING 等下一轮 plan，
+      // 这期间不该亮绿灯让用户误以为任务完成了。
+      return "info";
     }
     return "neutral";
   }

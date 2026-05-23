@@ -1050,6 +1050,15 @@ small,
   box-shadow: none;
 }
 
+/* info(蓝) = 进行中。绿色只代表 COMPLETED，进行中的 demand（含 recon 完成等下一轮 plan 的窗口）
+   用蓝灯，避免被误读成"已完成"。蓝值沿用 timeline-tone-info 已用的 #4a90e2。 */
+.dashboard-lamp-info,
+.status-blue,
+.status-dot.status-blue {
+  background: #4a90e2;
+  box-shadow: 0 0 6px rgba(74, 144, 226, 0.7);
+}
+
 .demand-progress {
   display: inline-flex;
   gap: 4px;
@@ -1086,6 +1095,9 @@ small,
 .demand-progress-danger::before,
 .demand-progress-danger::after,
 .demand-progress-danger .demand-progress-check { border-color: var(--red); }
+.demand-progress-info::before,
+.demand-progress-info::after,
+.demand-progress-info .demand-progress-check { border-color: #4a90e2; }
 .demand-progress.is-done::before,
 .demand-progress.is-done::after,
 .demand-progress.is-done .demand-progress-check {
