@@ -2724,21 +2724,11 @@ export function App() {
                               </div>
                             ) : null}
                           </div>
-                          {selectedDialogDecision ? (
-                            <>
-                              <label className="field">
-                                <span>{t("subgoal_detail.reply")}</span>
-                                <textarea
-                                  value={decisionNoteFor(selectedDialogDecision.decision_id)}
-                                  onChange={(event) => updateDecisionNote(selectedDialogDecision.decision_id, event.target.value)}
-                                  placeholder={t("subgoal_detail.reply_placeholder")}
-                                />
-	                              </label>
-	                              <div className="decision-modal-actions">
-	                                {renderDecisionActions(selectedDialogDecision)}
-	                              </div>
-	                            </>
-	                          ) : null}
+                          {selectedDialogDecision && selectedDialogDecision.status === "OPEN" ? (
+                            <p className="subgoal-detail-reply-hint bounded-copy">
+                              {t("subgoal_detail.reply_in_panel")}
+                            </p>
+                          ) : null}
                         </section>
                       </div>
                     )}

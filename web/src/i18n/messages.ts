@@ -153,6 +153,7 @@ export const messages: Record<Language, MessageDict> = {
     "subgoal_detail.reason": "Reason",
     "subgoal_detail.suggestions": "Suggestions",
     "subgoal_detail.reply": "Reply",
+    "subgoal_detail.reply_in_panel": "To respond, use the decision panel above.",
     "subgoal_detail.reply_placeholder": "Reply to this failed subgoal and provide the next instruction or missing context",
     "subgoal_detail.default_prompt": "I can help you understand this failure and suggest the next unblock step.",
 
@@ -582,6 +583,7 @@ export const messages: Record<Language, MessageDict> = {
     "subgoal_detail.reason": "原因",
     "subgoal_detail.suggestions": "建议",
     "subgoal_detail.reply": "回复",
+    "subgoal_detail.reply_in_panel": "如需回复，请使用上方的决策面板。",
     "subgoal_detail.reply_placeholder": "回复这个失败的子目标，给出下一步指令或补充上下文",
     "subgoal_detail.default_prompt": "我可以帮你看懂这个失败，并建议下一步如何解锁。",
 
