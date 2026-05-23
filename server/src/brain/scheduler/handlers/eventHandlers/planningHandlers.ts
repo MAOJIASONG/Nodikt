@@ -44,6 +44,7 @@ import {
 } from "../stateMachine.js";
 import { isSubgoalUnlockedByPlan } from "../planProgress.js";
 import { demandHasActiveExecutions } from "../executionRuntime.js";
+import { appendExecutionGuidance } from "../sessionState.js";
 
 const logger = createLogger("handlers:planning");
 
@@ -166,6 +167,27 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
       reason: (event.payload as { reason?: string })?.reason
     }, "跳过重新规划：该 demand 已有 OPEN plan-review 决策，等待用户处理");
     return {};
+  }
+
+  // replan 携带的 note（用户触发 replan / 中断重定向）折进 execution_guidance，
+  // 让 planner 与后续 worker 都能看到这条用户意图。否则 routes 里收集的中断备注会丢。
+  // reason="resume" 的 note 已经由 onDemandResumed 折进 guidance（B-T3b），这里不重复 append。
+  const replanReason = (event.payload as { reason?: EventReason })?.reason;
+  const replanNote = typeof (event.payload as { note?: unknown })?.note === "string"
+    ? (event.payload as { note?: string }).note!.trim()
+    : "";
+  if (replanNote.length > 0 && replanReason !== "resume") {
+    const guidedDemand = {
+      ...demand,
+      metadata: appendExecutionGuidance(demand.metadata, {
+        source: "user",
+        kind: "replan_note",
+        note: replanNote,
+        created_at: nowIso()
+      })
+    };
+    await ctx.repositories.demands.upsert(guidedDemand);
+    demand.metadata = guidedDemand.metadata;
   }
 
   const settings = await ctx.repositories.loadSettings();

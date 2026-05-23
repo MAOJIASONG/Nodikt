@@ -331,6 +331,20 @@ export function createApiRouter(
             )
           );
         }
+        // 停完当前执行后立即重新规划，让 demand"继续干"——否则中断后会停在 ACTIVE 无 live 工作，
+        // 要干等 ops stuck-demand 监控 60s 才自动续上，界面看着像卡死。
+        // reason=user_triggered 会触发 plan-review，用户审一下新方案再继续；中断备注(note)作为
+        // 重定向指令传给 planner（onReplanRequested 会折进 execution_guidance）。
+        // 仅在确实停了东西时才 replan，避免对一个本就没有活跃执行的 demand 反复触发。
+        if (activeExecutions.length > 0) {
+          await eventBus.publish(
+            createEvent(
+              EventType.REPLAN_REQUESTED,
+              { reason: "user_triggered", note: note ?? null, source: "interrupt" },
+              { demand_id: req.params.id }
+            )
+          );
+        }
         res.status(202).json({ ok: true, stopped_count: activeExecutions.length });
         return;
       }
