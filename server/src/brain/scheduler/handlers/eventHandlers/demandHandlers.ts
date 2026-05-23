@@ -247,29 +247,40 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     }
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
+      const metadata: Record<string, unknown> = {
+        runtime_session: {
+          phase: DemandPhase.ALIGNMENT,
+          waiting_on: "user_clarification",
+          frontier_subgoal_ids: [],
+          latest_checkpoint: event.event_id,
+          progress_note: "Initial demand needs clarification",
+          last_progress_at: timestamp
+        },
+        clarification_question: clarification.clarification_question,
+        conversation_history: [
+          { role: "user", content: payload.input_text, created_at: timestamp },
+          {
+            role: "assistant",
+            content: clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.",
+            created_at: timestamp
+          }
+        ]
+      };
+      // clarifyDemand 在 LLM 调用本身失败时会兜底降级为 NEEDS_CLARIFICATION，并把原始错误塞进
+      // llm_error；这里据此打 brain_error 红灯，让前端弹出 hero banner 而不是停留在橙灯。
+      if (clarification.llm_error) {
+        metadata.brain_error = {
+          message: clarification.llm_error.message,
+          error_name: clarification.llm_error.error_name,
+          source: "clarifier",
+          at: timestamp
+        };
+      }
       await ctx.repositories.demands.upsert({
         ...baseDemand,
-        metadata: {
-          runtime_session: {
-            phase: DemandPhase.ALIGNMENT,
-            waiting_on: "user_clarification",
-            frontier_subgoal_ids: [],
-            latest_checkpoint: event.event_id,
-            progress_note: "Initial demand needs clarification",
-            last_progress_at: timestamp
-          },
-          clarification_question: clarification.clarification_question,
-          conversation_history: [
-            { role: "user", content: payload.input_text, created_at: timestamp },
-            {
-              role: "assistant",
-              content: clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.",
-              created_at: timestamp
-            }
-          ]
-        }
+        metadata
       });
-      logger.info({ demandId }, "初始需求仍需要用户补充澄清");
+      logger.info({ demandId, hasLlmError: Boolean(clarification.llm_error) }, "初始需求仍需要用户补充澄清");
       return {};
     }
 
@@ -555,21 +566,33 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     }
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
-      logger.info({ demandId: demand.demand_id }, "澄清回复仍需要更多用户输入");
+      logger.info({ demandId: demand.demand_id, hasLlmError: Boolean(clarification.llm_error) }, "澄清回复仍需要更多用户输入");
+      const replyMetadata: Record<string, unknown> = {
+        ...appendConversationTurns(demand.metadata, [
+          incomingTurn,
+          {
+            role: "assistant",
+            content: clarification.clarification_question ?? "Please provide the remaining missing execution context.",
+            created_at: timestamp
+          }
+        ]),
+        clarification_question: clarification.clarification_question,
+        recon_in_progress: false
+      };
+      // clarifyDemand 在 LLM 调用本身失败时会兜底降级为 NEEDS_CLARIFICATION，并把原始错误塞进
+      // llm_error；这里据此重新打 brain_error（上面已就地清掉，clarifier 自身报错的语义跟"成功
+      // 恢复"相反，应该把红灯保持/补上）。
+      if (clarification.llm_error) {
+        replyMetadata.brain_error = {
+          message: clarification.llm_error.message,
+          error_name: clarification.llm_error.error_name,
+          source: "clarifier",
+          at: timestamp
+        };
+      }
       await ctx.repositories.demands.upsert(transitionDemand(demand, {
         title: clarification.display_title?.slice(0, 60) || demand.title,
-        metadata: {
-          ...appendConversationTurns(demand.metadata, [
-            incomingTurn,
-            {
-              role: "assistant",
-              content: clarification.clarification_question ?? "Please provide the remaining missing execution context.",
-              created_at: timestamp
-            }
-          ]),
-          clarification_question: clarification.clarification_question,
-          recon_in_progress: false
-        }
+        metadata: replyMetadata
       }, {
         phase: DemandPhase.ALIGNMENT,
         waiting_on: "user_clarification",

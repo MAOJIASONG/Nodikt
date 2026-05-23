@@ -60,6 +60,11 @@ type ClarifiedDemandResult = {
    * demandHandlers 在 READY 分支据此判断是否需要 PATH_GRANT_REQUIRED 决策。
    */
   workspace_override?: string | null;
+  /** 当 LLM 调用本身失败被 clarifier 兜底降级为 NEEDS_CLARIFICATION 时，这里附带原始错误，供 handler stamp brain_error。 */
+  llm_error?: {
+    message: string;
+    error_name: string;
+  };
 };
 
 type FrontierPlanResult = {
@@ -332,7 +337,11 @@ export class PlannerService {
       return {
         status: "NEEDS_CLARIFICATION",
         display_title: input.rawInput.trim().slice(0, 60) || "New Demand",
-        clarification_question: `${prefix}. Underlying error: ${detail}`
+        clarification_question: `${prefix}. Underlying error: ${detail}`,
+        llm_error: {
+          message: error.message ?? String(error),
+          error_name: error.name ?? "LlmInvocationError"
+        }
       };
     }
 
@@ -388,10 +397,15 @@ export class PlannerService {
           }
         } catch (retryError) {
           logger.warn({ err: retryError, missing }, "Clarifier retry 调用本身失败，降级问用户");
+          const retryErr = retryError instanceof Error ? retryError : new Error(String(retryError));
           return {
             status: "NEEDS_CLARIFICATION",
             display_title: result.display_title?.trim(),
-            clarification_question: "I have enough context to plan but the model call to finalize it failed. Could you state the objective in one sentence + any must/must-not constraints?"
+            clarification_question: "I have enough context to plan but the model call to finalize it failed. Could you state the objective in one sentence + any must/must-not constraints?",
+            llm_error: {
+              message: retryErr.message ?? String(retryErr),
+              error_name: retryErr.name ?? "LlmInvocationError"
+            }
           };
         }
       }
