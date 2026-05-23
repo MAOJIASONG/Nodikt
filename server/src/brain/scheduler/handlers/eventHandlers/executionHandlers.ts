@@ -372,6 +372,11 @@ export async function onExecutionStopRequested(event: SchedulerEvent, ctx: Handl
 
   const payload = event.payload as { reason?: string };
   const shouldCancel = payload.reason === "demand_cancelled";
+  // 用户主动中断（user_interrupted）后会立即 auto-replan 起新 subgoal 接着干，
+  // 旧的这条已被取代 —— 把它标 CANCELLED（终态）而不是 BLOCKED，否则它会一直挂着，
+  // 还被聚合错误面板当成"待处理问题"显示（"暂无详情记录"其实根本不是真错误）。
+  // demand_paused 的停止仍设 BLOCKED —— pause 是可恢复的，不该把 subgoal 判死。
+  const supersedeSubgoal = shouldCancel || payload.reason === "user_interrupted";
   const adapter = ctx.adapterRegistry.getExecutionAdapter(execution.execution_id);
   let stopError: string | null = null;
   if (adapter) {
@@ -394,7 +399,7 @@ export async function onExecutionStopRequested(event: SchedulerEvent, ctx: Handl
   const subgoal = await ctx.repositories.subgoals.getById(execution.subgoal_id);
   if (subgoal && ![SubgoalState.DONE, SubgoalState.FAILED, SubgoalState.CANCELLED].includes(subgoal.state)) {
     await ctx.repositories.subgoals.upsert(transitionSubgoal(subgoal, {
-      state: shouldCancel ? SubgoalState.CANCELLED : SubgoalState.BLOCKED
+      state: supersedeSubgoal ? SubgoalState.CANCELLED : SubgoalState.BLOCKED
     }));
   }
 

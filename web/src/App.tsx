@@ -485,10 +485,15 @@ export function App() {
   const workerNameById = new Map(
     workers.map((worker) => [worker.worker_id, worker.name])
   );
-  // demand 级聚合错误：用 subgoalStage 判定 "failed"，与计划面板的状态灯保持同一套口径
+  // demand 级聚合错误：用 subgoalStage 判定 "failed"，与计划面板的状态灯保持同一套口径。
+  // 但用户主动中断 / 取消的 subgoal 不算"错误待处理"——它们是有意停止、已被 replan 取代，
+  // 不该挂在面板上显示成"BLOCKED ... 暂无详情记录"。靠 execution INTERRUPTED/CANCELLED 或
+  // subgoal CANCELLED 识别（兼容旧数据里中断后停在 BLOCKED 的 subgoal）。
   const failedSubgoals = (detail?.subgoals ?? []).filter((sg) => {
     const exec = executionBySubgoalId.get(sg.subgoal_id);
     const decision = latestDecisionBySubgoalId.get(sg.subgoal_id);
+    if (sg.state === "CANCELLED") return false;
+    if (exec && ["INTERRUPTED", "CANCELLED"].includes(exec.state)) return false;
     return subgoalStage(sg.state, exec, decision) === "failed";
   });
 
