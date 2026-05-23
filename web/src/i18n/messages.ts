@@ -129,6 +129,13 @@ export const messages: Record<Language, MessageDict> = {
     "alignment.waiting_next": "Waiting for the next alignment turn.",
     "alignment.recon_findings": "Recon Findings",
 
+    // fault state (brain LLM unavailable — replaces alignment framing when demand.metadata.brain_error is set)
+    "fault.eyebrow": "Fault",
+    "fault.title": "Brain unavailable",
+    "fault.chip": "Failure",
+    "fault.copy": "The brain's LLM call failed. Fix the model / API key / base_url in Settings → models, then click Retry.",
+    "fault.retry": "Retry",
+
     // planning state
     "planning.eyebrow": "Planning",
     "planning.replanning": "Replanning execution flow",
@@ -569,6 +576,13 @@ export const messages: Record<Language, MessageDict> = {
     "alignment.waiting_turn": "等待下一轮澄清。",
     "alignment.waiting_next": "等待下一轮对齐。",
     "alignment.recon_findings": "调研发现",
+
+    // fault state (brain LLM 不可用 —— demand.metadata.brain_error 存在时替换 alignment 框架)
+    "fault.eyebrow": "故障",
+    "fault.title": "Brain 不可用",
+    "fault.chip": "故障",
+    "fault.copy": "Brain 的 LLM 调用失败了。请在 设置 → 模型 中修正 base_url / API key / 模型，然后点击重试。",
+    "fault.retry": "重试",
 
     // planning state
     "planning.eyebrow": "规划",

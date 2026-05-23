@@ -55,6 +55,16 @@ const logger = createLogger("handlers:demand");
  */
 const MAX_CLARIFY_RECON_ROUNDS = 3;
 
+/**
+ * Brain LLM 调用失败时（clarifier 自身报错），对话里展示给用户的友好系统消息。
+ * 原始错误文本仍保存在 demand.metadata.brain_error.message，由前端 hero banner 渲染，
+ * 因此这里只放一条"指引用户去 Settings 修配置再 Retry"的中性提示，不重复贴 stack trace。
+ * 英文留待 UI 层做 i18n（title/chip/button 都是从 messages.ts 取的），但本字符串本身
+ * 是 brain 内部消息、只在前端 conversation 列表里 echo，可保持英文不本地化。
+ */
+const BRAIN_FAILURE_NOTICE =
+  "The brain's LLM call failed. Please fix the model / API key / base_url in Settings → models, then click Retry to re-run alignment.";
+
 function readReconRoundsUsed(metadata: Record<string, unknown> | undefined): number {
   if (!metadata) return 0;
   const raw = metadata.recon_rounds_used;
@@ -247,6 +257,17 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
     }
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
+      // 当 clarifier 因 LLM 调用失败而降级时，"等用户回澄清"是错误的语义 —— 用户没法用更多
+      // 文字修一个 404。conversation_history 和 clarification_question 都改成 Brain Failure
+      // 提示，原始错误继续留在 brain_error.message 里，让 hero banner 单独承担"显示故障详情"
+      // 的职责，避免两个地方重复贴 stack trace。
+      const hasLlmError = Boolean(clarification.llm_error);
+      const assistantContent = hasLlmError
+        ? BRAIN_FAILURE_NOTICE
+        : (clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.");
+      const clarificationQuestion = hasLlmError
+        ? BRAIN_FAILURE_NOTICE
+        : clarification.clarification_question;
       const metadata: Record<string, unknown> = {
         runtime_session: {
           phase: DemandPhase.ALIGNMENT,
@@ -256,12 +277,12 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
           progress_note: "Initial demand needs clarification",
           last_progress_at: timestamp
         },
-        clarification_question: clarification.clarification_question,
+        clarification_question: clarificationQuestion,
         conversation_history: [
           { role: "user", content: payload.input_text, created_at: timestamp },
           {
             role: "assistant",
-            content: clarification.clarification_question ?? "Please provide the missing project/workspace path and key constraints.",
+            content: assistantContent,
             created_at: timestamp
           }
         ]
@@ -567,16 +588,25 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
 
     if (clarification.status === "NEEDS_CLARIFICATION") {
       logger.info({ demandId: demand.demand_id, hasLlmError: Boolean(clarification.llm_error) }, "澄清回复仍需要更多用户输入");
+      // 与 initial_demand 路径同理：clarifier 自己挂了不是"用户没说清"，conversation 里就别
+      // 假装 assistant 真的回了一句 "Planner LLM call failed (404)"；改成 Brain Failure 提示。
+      const hasLlmError = Boolean(clarification.llm_error);
+      const replyAssistantContent = hasLlmError
+        ? BRAIN_FAILURE_NOTICE
+        : (clarification.clarification_question ?? "Please provide the remaining missing execution context.");
+      const replyClarificationQuestion = hasLlmError
+        ? BRAIN_FAILURE_NOTICE
+        : clarification.clarification_question;
       const replyMetadata: Record<string, unknown> = {
         ...appendConversationTurns(demand.metadata, [
           incomingTurn,
           {
             role: "assistant",
-            content: clarification.clarification_question ?? "Please provide the remaining missing execution context.",
+            content: replyAssistantContent,
             created_at: timestamp
           }
         ]),
-        clarification_question: clarification.clarification_question,
+        clarification_question: replyClarificationQuestion,
         recon_in_progress: false
       };
       // clarifyDemand 在 LLM 调用本身失败时会兜底降级为 NEEDS_CLARIFICATION，并把原始错误塞进

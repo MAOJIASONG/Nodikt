@@ -1114,12 +1114,14 @@ export function App() {
     }
   }
 
-  async function sendClarificationReply() {
-    if (!detail || !clarificationReply.trim()) {
+  async function sendClarificationReplyText(rawText: string) {
+    if (!detail) {
       return;
     }
-
-    const replyText = clarificationReply.trim();
+    const replyText = rawText.trim();
+    if (!replyText) {
+      return;
+    }
     const optimisticUserMessage: ConversationMessage = {
       role: "user",
       content: replyText,
@@ -1149,6 +1151,10 @@ export function App() {
       setAssistantTyping(false);
       setConversationPending([]);
     }
+  }
+
+  async function sendClarificationReply() {
+    return sendClarificationReplyText(clarificationReply);
   }
 
   async function saveSettings() {
@@ -2353,6 +2359,38 @@ export function App() {
                       </div>
                       <div className={`plan-scroll${planIsExiting ? " is-replan-exiting" : ""}${planIsTransitioning ? " is-replanning" : ""}`}>
                         {alignmentInProgress ? (
+                          demandHasBrainError(detail.demand) ? (
+                            // —— 故障框架：brain LLM 坏了，用户不该被问"澄清"，而该去 Settings 改配置再 Retry。
+                            <div className="plan-waiting-state plan-waiting-state-fault">
+                              <div className="plan-waiting-head">
+                                <div>
+                                  <p className="eyebrow">{t("fault.eyebrow")}</p>
+                                  <h3>{t("fault.title")}</h3>
+                                </div>
+                                <span className="status-chip status-chip-danger">{t("fault.chip")}</span>
+                              </div>
+                              <p className="bounded-copy">{t("fault.copy")}</p>
+                              {/* conversation 历史保留只读，让用户看到自己的原始输入 + 系统故障声明 */}
+                              <div className="conversation-scroll modal-conversation-scroll detail-conversation-scroll">
+                                {conversationHistory.map((message, index) => (
+                                  <div key={`${message.created_at}-${index}`} className={`conversation-turn ${message.role === "assistant" ? "assistant" : "user"}`}>
+                                    <small>{message.role === "assistant" ? t("common.assistant") : t("common.you")}</small>
+                                    <p>{message.content}</p>
+                                  </div>
+                                ))}
+                                <div ref={conversationEndRef} />
+                              </div>
+                              <div className="modal-actions">
+                                <button
+                                  className="primary"
+                                  disabled={replySubmitting}
+                                  onClick={() => sendClarificationReplyText("retry")}
+                                >
+                                  {replySubmitting ? t("common.sending") : t("fault.retry")}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
                           <div className="plan-waiting-state">
                             <div className="plan-waiting-head">
                               <div>
@@ -2412,6 +2450,7 @@ export function App() {
                               </div>
                             )}
                           </div>
+                          )
                         ) : planIsGenerating ? (
                           <div className="plan-loading-state plan-loading-state-replan">
                             <div className="plan-waiting-head">
@@ -2677,8 +2716,20 @@ export function App() {
                   <div className={`create-modal${createModalExpanded ? " is-expanded" : ""}`} onClick={(event) => event.stopPropagation()}>
                     <div className="panel-heading">
                       <div>
-                        <p className="eyebrow">{detail && demandNeedsClarification(detail.demand) ? t("create_demand.alignment_eyebrow") : t("create_demand.new_eyebrow")}</p>
-                        <h2>{detail && demandNeedsClarification(detail.demand) ? t("create_demand.clarify_title") : t("create_demand.create_title")}</h2>
+                        <p className="eyebrow">{
+                          detail && demandHasBrainError(detail.demand)
+                            ? t("fault.eyebrow")
+                            : detail && demandNeedsClarification(detail.demand)
+                              ? t("create_demand.alignment_eyebrow")
+                              : t("create_demand.new_eyebrow")
+                        }</p>
+                        <h2>{
+                          detail && demandHasBrainError(detail.demand)
+                            ? t("fault.title")
+                            : detail && demandNeedsClarification(detail.demand)
+                              ? t("create_demand.clarify_title")
+                              : t("create_demand.create_title")
+                        }</h2>
                       </div>
                       <button className="ghost-button" onClick={closeCreateModal}>{t("common.close")}</button>
                     </div>
