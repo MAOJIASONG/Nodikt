@@ -401,11 +401,18 @@ export function App() {
     hint: string;
   };
 
+  const ACTION_REQUIRED_TERMINAL_STATES = ["COMPLETED", "CANCELLED", "FAILED"];
   const actionRequiredEntries: ActionRequiredEntry[] = demands
     .map<ActionRequiredEntry | null>((demand) => {
+      // 终态 demand（已完成 / 已取消 / 已失败）永远不"需要你处理"，直接跳过。
+      // 否则一条 CANCELLED 但 metadata 仍残留 brain_error / clarification_question 的 demand
+      // 会赖在"需要你处理"栏里（用户已经处理完了还显示在前面）。
+      if (ACTION_REQUIRED_TERMINAL_STATES.includes(demand.state)) {
+        return null;
+      }
       // fault 优先于其它分类：brain LLM 坏了不是"澄清"也不是"决策"，用户改 Settings 才能救回来。
       // 不放在 alignment 后面，否则 PENDING_ALIGNMENT + brain_error 的情况会被先吞成"Clarify"。
-      if (demandHasBrainError(demand) && demand.state !== "COMPLETED") {
+      if (demandHasBrainError(demand)) {
         return {
           demand,
           kind: "fault",
