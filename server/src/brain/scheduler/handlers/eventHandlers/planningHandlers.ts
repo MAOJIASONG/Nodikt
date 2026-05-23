@@ -27,6 +27,7 @@ import {
   EventReason,
   EventType,
   HandlerResult,
+  nowIso,
   PlanGeneratedPayload,
   SchedulerEvent,
   SubgoalState
@@ -159,13 +160,34 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
     sessionId: runtimeContext.session?.session_id,
     recentEventCount: runtimeContext.recent_events?.length ?? 0
   }, "正在生成前沿计划");
-  const plan = await ctx.planner.generateFrontierPlan(
-    demand,
-    reason,
-    planningRound,
-    settings,
-    runtimeContext
-  );
+  let plan;
+  try {
+    plan = await ctx.planner.generateFrontierPlan(
+      demand,
+      reason,
+      planningRound,
+      settings,
+      runtimeContext
+    );
+  } catch (plannerError) {
+    const err = plannerError instanceof Error ? plannerError : new Error(String(plannerError));
+    // 给 demand 打非终态错误标记 → 前端红灯。不改 state（保持可调度），随后 re-throw 让
+    // EventBus 兜底转 HANDLER_FAILED，ops 的 checkHandlerFailures 会按退避自动重试。下一轮
+    // 成功时 onPlanGenerated 清除该标记。
+    await ctx.repositories.demands.upsert(transitionDemand(demand, {
+      metadata: {
+        ...demand.metadata,
+        brain_error: {
+          message: err.message,
+          error_name: err.name,
+          source: "planner",
+          at: nowIso()
+        }
+      }
+    }));
+    logger.error({ demandId: demand.demand_id, planningRound, errorName: err.name, message: err.message }, "前沿计划生成失败，已打 brain_error 红灯标记并重新抛出以触发自动重试");
+    throw err;
+  }
   logger.info({ demandId: demand.demand_id, planningRound, subgoalCount: plan.subgoals.length }, "前沿计划已生成");
   return {
     events: [
@@ -239,9 +261,13 @@ export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext
   const planReason: EventReason | undefined = planPayload.reason;
   const needsReview = planReason ? REASONS_REQUIRING_PLAN_REVIEW.has(planReason) : true;
 
+  // planner 成功产出计划 → 顺手清除可能存在的 brain_error 红灯标记（planner 已恢复）。
+  // 注意：既有 metadata 整体被 spread 进新 metadata，若不显式剔除 brain_error 会被带回去。
+  const { brain_error: _clearedBrainError, ...restMetadata } = (demand.metadata ?? {}) as Record<string, unknown>;
+
   await ctx.repositories.demands.upsert(transitionDemand(demand, {
     metadata: {
-      ...(demand.metadata ?? {}),
+      ...restMetadata,
       latest_plan: event.payload
     }
   }, {

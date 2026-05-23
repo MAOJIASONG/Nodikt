@@ -444,7 +444,15 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
             { role: "assistant" as const, content: fallbackQuestion, created_at: timestamp }
           ]),
           clarification_question: fallbackQuestion,
-          recon_in_progress: false
+          recon_in_progress: false,
+          // brain 自己的 clarifier LLM 故障 → 打非终态红灯标记（不改 state，保持可调度）。
+          // 与 worker.last_error 区分；下一轮 clarifier 成功时清除。
+          brain_error: {
+            message: detail,
+            error_name: clarifierError instanceof Error ? clarifierError.name : "Error",
+            source: "clarifier",
+            at: timestamp
+          }
         }
       }, {
         phase: DemandPhase.ALIGNMENT,
@@ -452,6 +460,14 @@ export async function onUserInput(event: SchedulerEvent, ctx: HandlerContext): P
         progress_note: "Clarifier failed, asking user"
       }));
       return {};
+    }
+
+    // clarifier 成功恢复 → 提前剔除可能存在的 brain_error 红灯标记。下面所有 success 分支
+    // （NEEDS_RECON / NEEDS_CLARIFICATION / PATH_GRANT / READY）都基于 demand.metadata 做
+    // spread 写回，这里就地清掉，避免在每个分支重复处理。
+    if (demand.metadata && (demand.metadata as Record<string, unknown>).brain_error !== undefined) {
+      const { brain_error: _clearedBrainError, ...restMetadata } = demand.metadata as Record<string, unknown>;
+      demand.metadata = restMetadata;
     }
 
     // 把这一轮的输入写进对话历史。来自 recon worker 用 "assistant" 前缀标识便于前端区分
