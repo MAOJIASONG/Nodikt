@@ -1129,25 +1129,6 @@ export function App() {
     }
   }
 
-  async function interruptExecution(executionId: string, demandId: string, note?: string) {
-    setControlSubmittingId(executionId);
-    try {
-      await apiRequest<{ ok: true }>(`/executions/${executionId}/interrupt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note })
-      });
-      await loadDashboard();
-      if (activeDemandId === demandId) {
-        await loadDemandDetail(demandId);
-      }
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : t("demand.interrupt_failed"));
-    } finally {
-      setControlSubmittingId(null);
-    }
-  }
-
   async function sendClarificationReplyText(rawText: string) {
     if (!detail) {
       return;
@@ -2563,23 +2544,8 @@ export function App() {
                                                   >
                                                     {stageLabel(stage, linkedDecision)}
                                                   </button>
-                                                  {stage === "running" && execution ? (
-                                                    <button
-                                                      type="button"
-                                                      className="subgoal-interrupt-button"
-                                                      title={t("subgoal.interrupt_title")}
-                                                      disabled={controlSubmittingId === execution.execution_id}
-                                                      onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        if (!window.confirm(t("subgoal.interrupt_confirm", { title: subgoal.title }))) {
-                                                          return;
-                                                        }
-                                                        void interruptExecution(execution.execution_id, detail.demand.demand_id, t("subgoal.interrupt_note", { title: subgoal.title }));
-                                                      }}
-                                                    >
-                                                      {controlSubmittingId === execution.execution_id ? "..." : t("subgoal.interrupt_label")}
-                                                    </button>
-                                                  ) : null}
+                                                  {/* 单个 subgoal 不再单独中断（无意义且与 spec 不符）——
+                                                      控制统一在 demand 级 Pause / 取消任务。 */}
                                                 </div>
                                               </div>
                                           );
@@ -2651,23 +2617,8 @@ export function App() {
                                           >
                                             {stageLabel(stage, linkedDecision)}
                                           </button>
-                                          {stage === "running" && execution ? (
-                                            <button
-                                              type="button"
-                                              className="subgoal-interrupt-button"
-                                              title={t("subgoal.interrupt_title")}
-                                              disabled={controlSubmittingId === execution.execution_id}
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (!window.confirm(t("subgoal.interrupt_confirm", { title: subgoal.title }))) {
-                                                  return;
-                                                }
-                                                void interruptExecution(execution.execution_id, detail.demand.demand_id, t("subgoal.interrupt_note", { title: subgoal.title }));
-                                              }}
-                                            >
-                                              {controlSubmittingId === execution.execution_id ? "..." : t("subgoal.interrupt_label")}
-                                            </button>
-                                          ) : null}
+                                          {/* 单个 subgoal 不再单独中断（无意义且与 spec 不符）——
+                                              控制统一在 demand 级 Pause / 取消任务。 */}
                                         </div>
                                         {/* 执行中进度条放在卡片底部、横跨整行 —— 之前嵌在右列窄槽容易被忽略。
                                             注意：不再用 `&& execution` 守卫 —— subgoal 显示 running 但 execution
