@@ -23,16 +23,19 @@ import {
   createId,
   DecisionAction,
   DecisionReasonCode,
+  DecisionStatus,
   DemandPhase,
   DemandState,
   EventType,
   HandlerResult,
+  PlanGeneratedPayload,
   SchedulerEvent,
   SubgoalContract,
   SubgoalState,
   nowIso
 } from "../../../../domain/index.js";
 import type { ReconSubgoalDraft } from "../../../engines/planner/service.js";
+import { buildPlanReviewPrompt } from "./planningHandlers.js";
 import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
 import {
@@ -813,10 +816,12 @@ export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext)
     progress_note: "Demand paused"
   }));
 
+  const events: SchedulerEvent<unknown>[] = [];
+
+  // 停掉正在跑的执行
   const activeExecutions = await listActiveExecutionsForDemand(demand.demand_id, ctx);
-  logger.info({ demandId: demand.demand_id, activeExecutionCount: activeExecutions.length }, "需求已暂停");
-  return {
-    events: activeExecutions.map((execution) => createEvent(
+  for (const execution of activeExecutions) {
+    events.push(createEvent(
       EventType.EXECUTION_STOP_REQUESTED,
       { reason: "demand_paused" },
       {
@@ -825,8 +830,55 @@ export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext)
         execution_id: execution.execution_id,
         worker_id: execution.worker_id
       }
-    ))
-  };
+    ));
+  }
+
+  // 暂停的本质是"我想改计划"，所以跟 approve 界面一样：基于当前 latest_plan 在主面板挂一张
+  // PLAN_REVIEW 卡（标 origin=pause），用户在那儿看计划 + 对话反馈 + Approve/Reject，
+  // 而不是状态栏下面一个独立小输入框。
+  // 守卫：没有 latest_plan（还没出过方案）或已经有一张 OPEN plan-review 时不重复造卡。
+  const latestPlan = demand.metadata?.latest_plan as PlanGeneratedPayload | undefined;
+  const hasOpenPlanReview = (await ctx.repositories.decisions.list()).some((d) =>
+    d.demand_id === demand.demand_id
+    && d.reason_code === DecisionReasonCode.PLAN_REVIEW
+    && d.status === DecisionStatus.OPEN
+  );
+  if (latestPlan && !hasOpenPlanReview) {
+    const prompt = buildPlanReviewPrompt(latestPlan, demand.title || demand.initial_input);
+    const decision = ctx.decisionService.createRequest({
+      demandId: demand.demand_id,
+      source: "scheduler" as any,
+      reasonCode: DecisionReasonCode.PLAN_REVIEW,
+      prompt,
+      options: [
+        DecisionAction.APPROVE,
+        DecisionAction.PROVIDE_INFO,
+        DecisionAction.REJECT,
+        DecisionAction.CANCEL_DEMAND
+      ],
+      metadata: {
+        plan_review: {
+          // origin=pause 让 handlePlanReviewDecision 的 APPROVE 走"恢复执行"而不是"解锁 PLANNED frontier"——
+          // 暂停时 frontier subgoal 处于 BLOCKED，常规解锁对它们无效。
+          origin: "pause",
+          planning_round: latestPlan.planning_round,
+          frontier_subgoal_ids: latestPlan.frontier_subgoal_ids,
+          outline_titles: latestPlan.overall_plan_outline.map((item) => item.title)
+        }
+      }
+    });
+    events.push(createEvent(EventType.DECISION_REQUEST_CREATED, { decision_request: decision }, {
+      demand_id: demand.demand_id,
+      decision_id: decision.decision_id
+    }));
+  }
+
+  logger.info({
+    demandId: demand.demand_id,
+    activeExecutionCount: activeExecutions.length,
+    planReviewCreated: Boolean(latestPlan && !hasOpenPlanReview)
+  }, "需求已暂停");
+  return { events };
 }
 
 /**
@@ -853,9 +905,27 @@ export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext
     ? (event.payload as { note?: string }).note!.trim()
     : "";
   const timestamp = nowIso();
+
+  // 恢复时把暂停时挂的 OPEN plan-review 卡标 EXPIRED —— 处理"用户直接点 Resume 按钮"而非
+  // "在卡里 Approve"的情况，避免遗留一张过期卡。若是从卡里 Approve 进来的，该卡已 RESOLVED，
+  // 这里 filter 不到，不会重复处理。
+  const openPlanReviews = (await ctx.repositories.decisions.list()).filter((d) =>
+    d.demand_id === demand.demand_id
+    && d.reason_code === DecisionReasonCode.PLAN_REVIEW
+    && d.status === DecisionStatus.OPEN
+  );
+  for (const stale of openPlanReviews) {
+    await ctx.repositories.decisions.upsert({
+      ...stale,
+      status: DecisionStatus.EXPIRED,
+      resolved_at: timestamp
+    });
+  }
+
   const demandPatch: DemandSnapshotPatch = {
     state: DemandState.READY,
-    current_phase: DemandPhase.PLANNING
+    current_phase: DemandPhase.PLANNING,
+    active_decision_id: null
   };
   if (resumeNote.length > 0) {
     demandPatch.metadata = appendExecutionGuidance(demand.metadata, {

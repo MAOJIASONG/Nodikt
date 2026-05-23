@@ -347,7 +347,6 @@ export function App() {
   const [activeDemandId, setActiveDemandId] = useState<string | null>(null);
   const [newDemand, setNewDemand] = useState("");
   const [clarificationReply, setClarificationReply] = useState("");
-  const [pausedInstruction, setPausedInstruction] = useState("");
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createModalExpanded, setCreateModalExpanded] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -2077,36 +2076,9 @@ export function App() {
 	                          {controlSubmittingId === detail.demand.demand_id ? t("common.sending") : t("demand.detail.cancel_task")}
 	                        </button>
 	                      </div>
-	                      {detail.demand.state === "PAUSED" ? (
-	                        <div className="paused-instruction-box">
-	                          <label className="field">
-	                            <span>{t("demand.detail.paused_instruction_label")}</span>
-	                            <textarea
-	                              value={pausedInstruction}
-	                              onChange={(event) => setPausedInstruction(event.target.value)}
-	                              placeholder={t("demand.detail.paused_instruction_placeholder")}
-	                            />
-	                          </label>
-	                          <button
-	                            type="button"
-	                            className="primary"
-	                            disabled={controlSubmittingId === detail.demand.demand_id}
-	                            onClick={async () => {
-	                              const instruction = pausedInstruction.trim();
-	                              await controlDemand(
-	                                detail.demand.demand_id,
-	                                "resume",
-	                                instruction.length > 0 ? instruction : t("demand.detail.resume_note")
-	                              );
-	                              setPausedInstruction("");
-	                            }}
-	                          >
-	                            {controlSubmittingId === detail.demand.demand_id
-	                              ? t("common.sending")
-	                              : t("demand.detail.resume_with_instruction")}
-	                          </button>
-	                        </div>
-	                      ) : null}
+	                      {/* 暂停时不再用状态栏下面的独立输入框。暂停会在主面板挂一张 plan-review 卡
+	                          （后端 onDemandPaused 基于 latest_plan 生成），用户在那儿看计划 + 对话反馈 + Approve，
+	                          跟中断 / approve 界面统一。直接点上面的 Resume 按钮则快速恢复（会清掉那张卡）。 */}
 	                    </div>
 	                  </section>
 

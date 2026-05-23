@@ -284,7 +284,7 @@ const REASONS_REQUIRING_PLAN_REVIEW: ReadonlySet<EventReason> = new Set<EventRea
   "recon_completed"
 ]);
 
-function buildPlanReviewPrompt(payload: PlanGeneratedPayload, demandTitle: string): string {
+export function buildPlanReviewPrompt(payload: PlanGeneratedPayload, demandTitle: string): string {
   const outlineLines = payload.overall_plan_outline.slice(0, 8).map((item, index) =>
     `  ${index + 1}. ${item.title} — ${item.objective}`
   );

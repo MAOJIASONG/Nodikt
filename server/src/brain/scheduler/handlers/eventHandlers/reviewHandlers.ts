@@ -838,6 +838,22 @@ async function handlePlanReviewDecision(
       status: "RESOLVED" as any,
       resolved_at: timestamp
     });
+
+    // 暂停态批准 = 恢复执行。暂停时的 frontier subgoal 处于 BLOCKED（不是 PLANNED），
+    // 常规的"解锁 PLANNED frontier"对它们无效，会让 demand 进 ACTIVE 却没有 live 工作。
+    // 走 DEMAND_RESUMED 复用恢复路径（READY/PLANNING → REPLAN_REQUESTED resume → 重新规划并继续）。
+    if (planReviewMeta.origin === "pause") {
+      await ctx.repositories.demands.upsert(transitionDemand(demand, {
+        active_decision_id: null
+      }, {
+        progress_note: "Paused plan approved by user; resuming"
+      }));
+      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "暂停态 plan-review 批准，恢复执行");
+      return {
+        events: [createEvent(EventType.DEMAND_RESUMED, { action: "resume" }, { demand_id: demand.demand_id })]
+      };
+    }
+
     await ctx.repositories.demands.upsert(transitionDemand(demand, {
       state: DemandState.ACTIVE,
       current_phase: DemandPhase.EXECUTION,
