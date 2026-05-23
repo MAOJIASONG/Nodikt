@@ -63,6 +63,12 @@ export const messages: Record<Language, MessageDict> = {
     "demand.detail.interrupt_default_note": "Interrupted from demand detail",
     "demand.detail.pause_note": "Paused from demand detail",
     "demand.detail.resume_note": "Resumed from demand detail",
+    "demand.detail.cancel_task": "End Task",
+    "demand.detail.cancel_confirm": "End this demand and stop all its running tasks? This cannot be undone.",
+    "demand.detail.cancel_note": "Ended by user",
+    "demand.detail.paused_instruction_label": "Add an instruction (applied on resume)",
+    "demand.detail.paused_instruction_placeholder": "e.g. change the output format to ...",
+    "demand.detail.resume_with_instruction": "Resume with instruction",
 
     // backend state record panel
     "state_record.eyebrow": "Backend State Record",
@@ -493,6 +499,12 @@ export const messages: Record<Language, MessageDict> = {
     "demand.detail.interrupt_default_note": "在需求详情中触发中断",
     "demand.detail.pause_note": "在需求详情中暂停",
     "demand.detail.resume_note": "在需求详情中恢复",
+    "demand.detail.cancel_task": "结束任务",
+    "demand.detail.cancel_confirm": "结束该需求并停止它所有正在运行的任务？此操作不可撤销。",
+    "demand.detail.cancel_note": "用户结束任务",
+    "demand.detail.paused_instruction_label": "补充指令（恢复时生效）",
+    "demand.detail.paused_instruction_placeholder": "例如：把输出格式改为 ...",
+    "demand.detail.resume_with_instruction": "带指令恢复",
 
     // backend state record panel
     "state_record.eyebrow": "后端状态记录",

@@ -346,6 +346,7 @@ export function App() {
   const [activeDemandId, setActiveDemandId] = useState<string | null>(null);
   const [newDemand, setNewDemand] = useState("");
   const [clarificationReply, setClarificationReply] = useState("");
+  const [pausedInstruction, setPausedInstruction] = useState("");
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createModalExpanded, setCreateModalExpanded] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -1969,7 +1970,58 @@ export function App() {
 	                                : t("demand.detail.interrupt"))}
 	                        </button>
 	                        {/* 详情页头部原 "Cancel Demand" 按钮按 review #6 隐藏（后端 controlDemand cancel API 仍保留）。 */}
+	                        <button
+	                          type="button"
+	                          className="ghost-button danger-button"
+	                          disabled={
+	                            controlSubmittingId === detail.demand.demand_id ||
+	                            ["COMPLETED", "FAILED", "CANCELLED"].includes(detail.demand.state)
+	                          }
+	                          onClick={() => {
+	                            if (!window.confirm(t("demand.detail.cancel_confirm"))) {
+	                              return;
+	                            }
+	                            void controlDemand(
+	                              detail.demand.demand_id,
+	                              "cancel",
+	                              t("demand.detail.cancel_note"),
+	                              { returnToBoardAfterCancel: true }
+	                            );
+	                          }}
+	                        >
+	                          {controlSubmittingId === detail.demand.demand_id ? t("common.sending") : t("demand.detail.cancel_task")}
+	                        </button>
 	                      </div>
+	                      {detail.demand.state === "PAUSED" ? (
+	                        <div className="paused-instruction-box">
+	                          <label className="field">
+	                            <span>{t("demand.detail.paused_instruction_label")}</span>
+	                            <textarea
+	                              value={pausedInstruction}
+	                              onChange={(event) => setPausedInstruction(event.target.value)}
+	                              placeholder={t("demand.detail.paused_instruction_placeholder")}
+	                            />
+	                          </label>
+	                          <button
+	                            type="button"
+	                            className="primary"
+	                            disabled={controlSubmittingId === detail.demand.demand_id}
+	                            onClick={async () => {
+	                              const instruction = pausedInstruction.trim();
+	                              await controlDemand(
+	                                detail.demand.demand_id,
+	                                "resume",
+	                                instruction.length > 0 ? instruction : t("demand.detail.resume_note")
+	                              );
+	                              setPausedInstruction("");
+	                            }}
+	                          >
+	                            {controlSubmittingId === detail.demand.demand_id
+	                              ? t("common.sending")
+	                              : t("demand.detail.resume_with_instruction")}
+	                          </button>
+	                        </div>
+	                      ) : null}
 	                    </div>
 	                  </section>
 

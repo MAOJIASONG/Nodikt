@@ -787,8 +787,15 @@ export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext
     progress_note: "Demand resumed"
   }));
   logger.info({ demandId: demand.demand_id }, "需求已恢复，准备请求重新规划");
+  const resumeNote = typeof (event.payload as { note?: unknown })?.note === "string"
+    ? (event.payload as { note?: string }).note!.trim()
+    : "";
   return {
-    events: [createEvent(EventType.REPLAN_REQUESTED, { reason: "resume" }, { demand_id: demand.demand_id })]
+    events: [createEvent(
+      EventType.REPLAN_REQUESTED,
+      { reason: "resume", note: resumeNote.length > 0 ? resumeNote : null },
+      { demand_id: demand.demand_id }
+    )]
   };
 }
 
