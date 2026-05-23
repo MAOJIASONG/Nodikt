@@ -208,6 +208,25 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
     throw err;
   }
   logger.info({ demandId: demand.demand_id, planningRound, subgoalCount: plan.subgoals.length }, "前沿计划已生成");
+
+  if (plan.llm_error) {
+    // planner LLM 失败但 service 兜底返了 fallback plan —— 这里 stamp brain_error 让前端红灯+故障 banner
+    // 显示出来；fallback plan 照样下发（用户至少知道 brain 病了）。下一轮 planner 成功时
+    // onPlanGenerated 已有的清除逻辑会把这个 marker 清掉。
+    await ctx.repositories.demands.upsert(transitionDemand(demand, {
+      metadata: {
+        ...demand.metadata,
+        brain_error: {
+          message: plan.llm_error.message,
+          error_name: plan.llm_error.error_name,
+          source: "planner",
+          at: nowIso()
+        }
+      }
+    }));
+    logger.warn({ demandId: demand.demand_id, errorName: plan.llm_error.error_name }, "planner LLM 故障，已 stamp brain_error，下发 fallback plan");
+  }
+
   return {
     events: [
       createEvent(EventType.PLAN_GENERATED, plan.payload, { demand_id: demand.demand_id }),

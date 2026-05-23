@@ -997,6 +997,16 @@ small,
   opacity: 0.85;
 }
 
+/* E-T3：看板卡片底部的相对时间 chip。视觉风格沿用 sidebar-demand-time —— 弱化、tabular-nums
+   防止"7m"和"1h"宽度抖动；hover 时 title 显示绝对 ISO 时间。 */
+.dashboard-card-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted, rgba(255, 255, 255, 0.45));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
 .dashboard-lamp,
 .worker-lamp,
 .status-dot {

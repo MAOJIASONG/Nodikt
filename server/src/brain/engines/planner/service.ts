@@ -517,9 +517,14 @@ export class PlannerService {
   ): Promise<{
     subgoals: SubgoalContract[];
     payload: PlanGeneratedPayload;
+    llm_error?: {
+      message: string;
+      error_name: string;
+    };
   }> {
     const compactContext = compactRuntimeContext(runtimeContext);
     let result: FrontierPlanResult;
+    let capturedLlmError: { message: string; error_name: string } | undefined;
     try {
       result = await this.llmClient.generateJson<FrontierPlanResult>({
         settings,
@@ -604,6 +609,11 @@ export class PlannerService {
       }
       logger.warn({ err: error, demandId: demand.demand_id }, "Planner frontier JSON failed; using conservative single-step plan");
       result = this.createFallbackFrontierPlan(demand);
+      // 捕获 LLM 错误信息，回传给 handler 让其 stamp brain_error；fallback plan 仍照常下发。
+      capturedLlmError = {
+        message: error.message ?? String(error),
+        error_name: error.name ?? "LlmInvocationError"
+      };
     }
 
     const timestamp = nowIso();
@@ -682,7 +692,8 @@ export class PlannerService {
           lessons_or_policy_summary: result.lessons_or_policy_summary
         },
         reason
-      }
+      },
+      llm_error: capturedLlmError
     };
   }
 

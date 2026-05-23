@@ -442,7 +442,14 @@ export function App() {
     .filter((entry): entry is ActionRequiredEntry => entry !== null);
 
   const actionRequiredCount = actionRequiredEntries.length;
-  const runningExecutionCount = detail?.executions.filter((item) => item.state === "RUNNING" || item.latest_worker_status === "running").length ?? 0;
+  // 中断计数只看 execution.state 处于活动态（与后端 ACTIVE_EXECUTION_STATES 对齐：
+  // server/src/brain/scheduler/handlers/stateMachine.ts:34 = {QUEUED, RUNNING, VERIFYING}）。
+  // 之前还 OR 了 latest_worker_status === "running"，会把 INTERRUPTED/DONE 但心跳字段从未更新的
+  // 终态 execution 误算成"在跑"，使"中断 (N)"按钮始终亮着不归零。
+  const ACTIVE_EXECUTION_STATES_FE = new Set(["RUNNING", "QUEUED", "VERIFYING"]);
+  const runningExecutionCount = detail?.executions.filter((item) =>
+    ACTIVE_EXECUTION_STATES_FE.has(item.state)
+  ).length ?? 0;
   const assignedWorkerBySubgoalId = new Map(
     (detail?.executions ?? []).map((execution) => [execution.subgoal_id, execution.worker_id])
   );
@@ -1888,6 +1895,11 @@ export function App() {
                           </div>
                           <div className="dashboard-card-footer">
                             <small>{t((demand.dashboard_summary?.worker_count ?? 0) === 1 ? "dashboard.worker_count_one" : "dashboard.worker_count_other", { count: demand.dashboard_summary?.worker_count ?? 0 })}</small>
+                            {/* E-T3：看板卡片也加上相对时间 chip（sidebar 已在 E-T2 加过）。
+                                绝对时间挂在 title 上 hover 兜底；复用 formatRelativeShort + time.* i18n。 */}
+                            <small className="dashboard-card-time" title={demand.updated_at ?? demand.created_at}>
+                              {formatRelativeShort(demand.updated_at ?? demand.created_at, Date.now(), t)}
+                            </small>
                             <small>{demand.state}</small>
                           </div>
                         </button>
