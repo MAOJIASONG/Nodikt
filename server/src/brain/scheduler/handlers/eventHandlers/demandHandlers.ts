@@ -37,12 +37,14 @@ import { HandlerContext } from "../../event_bus/types.js";
 import { createLogger } from "../../../../logger.js";
 import {
   appendConversationTurns,
+  appendExecutionGuidance,
   readConversationHistory
 } from "../sessionState.js";
 import {
   isTerminalDemand,
   transitionDemand
 } from "../stateMachine.js";
+import type { DemandSnapshotPatch } from "../stateMachine.js";
 import { listActiveExecutionsForDemand } from "../executionRuntime.js";
 
 const logger = createLogger("handlers:demand");
@@ -778,18 +780,28 @@ export async function onDemandResumed(event: SchedulerEvent, ctx: HandlerContext
     logger.debug({ demandId: demand.demand_id, state: demand.state }, "忽略终态需求的恢复请求");
     return {};
   }
-  await ctx.repositories.demands.upsert(transitionDemand(demand, {
-    state: DemandState.READY,
-    current_phase: DemandPhase.PLANNING
-  }, {
-    phase: DemandPhase.PLANNING,
-    waiting_on: null,
-    progress_note: "Demand resumed"
-  }));
-  logger.info({ demandId: demand.demand_id }, "需求已恢复，准备请求重新规划");
   const resumeNote = typeof (event.payload as { note?: unknown })?.note === "string"
     ? (event.payload as { note?: string }).note!.trim()
     : "";
+  const timestamp = nowIso();
+  const demandPatch: DemandSnapshotPatch = {
+    state: DemandState.READY,
+    current_phase: DemandPhase.PLANNING
+  };
+  if (resumeNote.length > 0) {
+    demandPatch.metadata = appendExecutionGuidance(demand.metadata, {
+      source: "user",
+      kind: "resume_instruction",
+      note: resumeNote,
+      created_at: timestamp
+    });
+  }
+  await ctx.repositories.demands.upsert(transitionDemand(demand, demandPatch, {
+    phase: DemandPhase.PLANNING,
+    waiting_on: null,
+    progress_note: resumeNote.length > 0 ? "Demand resumed with instruction" : "Demand resumed"
+  }));
+  logger.info({ demandId: demand.demand_id }, "需求已恢复，准备请求重新规划");
   return {
     events: [createEvent(
       EventType.REPLAN_REQUESTED,
