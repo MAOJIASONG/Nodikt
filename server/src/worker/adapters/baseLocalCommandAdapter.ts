@@ -250,7 +250,23 @@ export abstract class BaseLocalCommandAdapter implements WorkerAdapter {
    */
   async stopExecution(executionId: string): Promise<void> {
     const runtime = this.runtimeByExecution.get(executionId);
-    runtime?.process.kill("SIGTERM");
+    if (!runtime) {
+      return;
+    }
+    // SIGTERM 给进程一个机会优雅退出（清理子进程 / 落盘）。某些 CLI（claude-code / opencode 这类
+    // 包了 readline 或捕获了信号的）可能忽略或慢于 SIGTERM —— 5 秒不退就 SIGKILL 强终止，
+    // 避免“中断了但工作器还在跑、还能产出 result 抢赢 INTERRUPTED 转换”的竞态。
+    runtime.process.kill("SIGTERM");
+    setTimeout(() => {
+      // 进程已经退出的话 runtime 会被 close 事件移除；仍然能拿到就说明还活着，强杀。
+      if (this.runtimeByExecution.get(executionId) === runtime) {
+        try {
+          runtime.process.kill("SIGKILL");
+        } catch {
+          // 已退出 / 不存在则忽略
+        }
+      }
+    }, 5000);
   }
 
   /**

@@ -301,6 +301,40 @@ export function createApiRouter(
   router.post("/demands/:id/control", async (req, res, next) => {
     try {
       const action = String(req.body.action ?? "");
+      const note = req.body.note as string | undefined;
+
+      if (action === "interrupt") {
+        // 软中断：只停掉该 demand 当前正在跑的 executions，demand 状态不动。
+        // 用户可以 Pause/Resume/Cancel/Replan 继续操作。不终态 cancel demand。
+        // 活跃集合与 onExecutionStopRequested 内部的 ACTIVE_EXECUTION_STATES 对齐
+        // （QUEUED / RUNNING / VERIFYING），避免发了事件但处理器忽略导致计数虚高。
+        const allExecutions = await repositories.executions.list();
+        const activeExecutions = allExecutions.filter((exec) =>
+          exec.demand_id === req.params.id
+          && (
+            exec.state === ExecutionState.QUEUED
+            || exec.state === ExecutionState.RUNNING
+            || exec.state === ExecutionState.VERIFYING
+          )
+        );
+        for (const exec of activeExecutions) {
+          await eventBus.publish(
+            createEvent(
+              EventType.EXECUTION_STOP_REQUESTED,
+              { reason: "user_interrupted", note: note ?? null },
+              {
+                demand_id: exec.demand_id,
+                subgoal_id: exec.subgoal_id,
+                execution_id: exec.execution_id,
+                worker_id: exec.worker_id
+              }
+            )
+          );
+        }
+        res.status(202).json({ ok: true, stopped_count: activeExecutions.length });
+        return;
+      }
+
       const eventType = action === "pause"
         ? EventType.DEMAND_PAUSED
         : action === "resume"
@@ -309,7 +343,7 @@ export function createApiRouter(
       await eventBus.publish(
         createEvent(
           eventType,
-          { action: action as "pause" | "resume" | "cancel", note: req.body.note as string | undefined },
+          { action: action as "pause" | "resume" | "cancel", note },
           { demand_id: req.params.id }
         )
       );
