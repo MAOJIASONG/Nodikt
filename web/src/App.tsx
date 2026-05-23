@@ -2455,6 +2455,8 @@ export function App() {
                           <div className="plan-list plan-list-collapsible">
                             {planOutline.map((item, index) => {
                               const linkedSubgoals = detail.subgoals.filter((subgoal) => {
+                                // 隐藏已取代/取消的 subgoal（中断或被新一轮规划取代的），别让它们以红色"失败"挂在计划里。
+                                if (subgoal.state === "CANCELLED") return false;
                                 const mappedIds = item.frontier_subgoal_ids ?? [];
                                 if (mappedIds.length > 0) {
                                   return mappedIds.includes(subgoal.subgoal_id);
@@ -2568,7 +2570,7 @@ export function App() {
                                   </div>
                                 </div>
                                 <div className="list-stack plan-subgoal-stack">
-                                  {detail.subgoals.map((subgoal) => {
+                                  {detail.subgoals.filter((sg) => sg.state !== "CANCELLED").map((subgoal) => {
                                     const execution = executionBySubgoalId.get(subgoal.subgoal_id);
                                     const linkedDecision = latestDecisionBySubgoalId.get(subgoal.subgoal_id);
                                     const assignedWorkerId = assignedWorkerBySubgoalId.get(subgoal.subgoal_id);

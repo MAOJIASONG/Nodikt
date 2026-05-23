@@ -839,16 +839,42 @@ async function handlePlanReviewDecision(
       resolved_at: timestamp
     });
 
-    // 暂停态批准 = 恢复执行。暂停时的 frontier subgoal 处于 BLOCKED（不是 PLANNED），
-    // 常规的"解锁 PLANNED frontier"对它们无效，会让 demand 进 ACTIVE 却没有 live 工作。
-    // 走 DEMAND_RESUMED 复用恢复路径（READY/PLANNING → REPLAN_REQUESTED resume → 重新规划并继续）。
+    // 暂停态批准 = 立即恢复当前 frontier 的 BLOCKED/PLANNED subgoal 并派发，不重新规划。
+    // 这些 subgoal 暂停前就已存在，直接 re-ready 即可继续——省掉等 planner LLM 重新生成的时间
+    // （用户反馈："点了批准三个 subgoal 还红着、要等很久新的才出来"）。onSubgoalMarkedReady 接受
+    // BLOCKED/PLANNED→READY 并派发，但要求 demand 非 PAUSED，所以先把 demand 设回 ACTIVE 再发事件。
+    // 找不到可恢复的 frontier subgoal（边角情况，比如都已完成）才退化到 DEMAND_RESUMED 让 planner 决定。
     if (planReviewMeta.origin === "pause") {
+      const resumable = (await ctx.repositories.subgoals.list()).filter((sg) =>
+        sg.demand_id === demand.demand_id
+        && frontierIds.includes(sg.subgoal_id)
+        && (sg.state === SubgoalState.BLOCKED || sg.state === SubgoalState.PLANNED)
+      );
+      if (resumable.length > 0) {
+        await ctx.repositories.demands.upsert(transitionDemand(demand, {
+          state: DemandState.ACTIVE,
+          current_phase: DemandPhase.EXECUTION,
+          active_decision_id: null
+        }, {
+          phase: DemandPhase.EXECUTION,
+          waiting_on: "worker_result",
+          progress_note: "Paused plan approved; resuming frontier subgoals"
+        }));
+        logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id, resumedCount: resumable.length }, "暂停态 plan-review 批准，立即恢复 frontier subgoals");
+        return {
+          events: resumable.map((sg) => createEvent(
+            EventType.SUBGOAL_MARKED_READY,
+            { dependency_check: { satisfied_dependencies: [], remaining_dependencies: [] } },
+            { demand_id: demand.demand_id, subgoal_id: sg.subgoal_id }
+          ))
+        };
+      }
       await ctx.repositories.demands.upsert(transitionDemand(demand, {
         active_decision_id: null
       }, {
-        progress_note: "Paused plan approved by user; resuming"
+        progress_note: "Paused plan approved; resuming via replan"
       }));
-      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "暂停态 plan-review 批准，恢复执行");
+      logger.info({ demandId: demand.demand_id, decisionId: decision.decision_id }, "暂停态 plan-review 批准，无可恢复 frontier subgoal，走 replan 恢复");
       return {
         events: [createEvent(EventType.DEMAND_RESUMED, { action: "resume" }, { demand_id: demand.demand_id })]
       };
