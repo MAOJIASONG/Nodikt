@@ -485,16 +485,13 @@ export function App() {
     workers.map((worker) => [worker.worker_id, worker.name])
   );
   // demand 级聚合错误：用 subgoalStage 判定 "failed"，与计划面板的状态灯保持同一套口径。
-  // 但用户主动中断 / 取消的 subgoal 不算"错误待处理"——它们是有意停止、已被 replan 取代，
-  // 不该挂在面板上显示成"BLOCKED ... 暂无详情记录"。靠 execution INTERRUPTED/CANCELLED 或
-  // subgoal CANCELLED 识别（兼容旧数据里中断后停在 BLOCKED 的 subgoal）。
-  const failedSubgoals = (detail?.subgoals ?? []).filter((sg) => {
-    const exec = executionBySubgoalId.get(sg.subgoal_id);
-    const decision = latestDecisionBySubgoalId.get(sg.subgoal_id);
-    if (sg.state === "CANCELLED") return false;
-    if (exec && ["INTERRUPTED", "CANCELLED"].includes(exec.state)) return false;
-    return subgoalStage(sg.state, exec, decision) === "failed";
-  });
+  // "问题待处理"面板回答客户的一个问题：现在有什么真的失败了、需要我处理？
+  // 正向定义而非黑名单：只有 subgoal 自身处于 FAILED 终态才算"失败的工作"。
+  //   - BLOCKED（暂停 / 停止 / 被取代 / 等重试）、CANCELLED（中断 / 取代）都是内部生命周期状态，不是失败；
+  //   - 需要人工决策的阻塞已经由上方"决策面板"覆盖，不在这里重复；
+  //   - TIMEOUT / INTERRUPTED 等 execution 状态残留也不再逐个拉黑——它们都不会让 subgoal 进 FAILED。
+  // 这样任何新增的内部状态都不会再误报成"问题待处理"。
+  const failedSubgoals = (detail?.subgoals ?? []).filter((sg) => sg.state === "FAILED");
 
   function openSubgoalDialog(subgoalId: string, mode: "success" | "failed" | "issue") {
     if (subgoalDialogCloseTimerRef.current) {
