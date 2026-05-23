@@ -831,9 +831,7 @@ export function App() {
         Approve: t("decision_action.approve_plan"),
         ProvideInfo: t("decision_action.send_feedback"),
         Reject: t("decision_action.reject_plan"),
-        CancelDemand: t("decision_action.cancel_demand"),
-        Pause: t("decision_action.pause"),
-        Stop: t("decision_action.stop")
+        CancelDemand: t("decision_action.cancel_demand")
       };
       if (planReviewLabels[action]) {
         return planReviewLabels[action];
@@ -843,8 +841,6 @@ export function App() {
       Approve: t("decision_action.approve"),
       Reject: t("decision_action.reject"),
       ProvideInfo: t("decision_action.provide_info"),
-      Pause: t("decision_action.pause"),
-      Stop: t("decision_action.stop"),
       CancelDemand: t("decision_action.cancel_demand")
     }[action] ?? action;
   }
@@ -1300,9 +1296,12 @@ export function App() {
       ];
     }
 
-    // 通用决策按钮：剔除 CancelDemand，按 review #6 不在前端暴露这个动作
+    // 决策卡只暴露 Approve / Reject / ProvideInfo(Reply) 三个动作。
+    // Pause/Stop/CancelDemand 等控制动作不在决策卡里 —— 它们属于 demand 级控制（hero 区按钮）。
+    // 用正向白名单而非黑名单，确保未来后端即使在 options 里塞了别的动作，卡片也保持干净。
+    const DECISION_CARD_ACTIONS = ["Approve", "Reject", "ProvideInfo"];
     const actions = ((decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[])
-      .filter((action) => action !== "CancelDemand");
+      .filter((action) => DECISION_CARD_ACTIONS.includes(action));
     return actions.map((action) => {
       const needsNote = decisionActionNeedsNote(action);
       const disabled = decisionSubmitting === decision.decision_id || (needsNote && !decisionNoteFor(decision.decision_id).trim());
