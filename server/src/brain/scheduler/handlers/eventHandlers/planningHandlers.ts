@@ -150,6 +150,24 @@ export async function onReplanRequested(event: SchedulerEvent, ctx: HandlerConte
     return {};
   }
 
+  // 源头去重：如果该 demand 已经有一张 OPEN 的 plan-review 决策，说明用户还在审当前方案，
+  // 不要再生成新计划（否则并发 replan 会产出重复 plan + 重复 subgoal）。用户 approve/reject/
+  // 反馈后该决策会变成非 OPEN（handlePlanReviewDecision 先标 RESOLVED 再发 replan_after_decision），
+  // 那时这里的守卫自然放行下一轮。
+  const openPlanReview = (await ctx.repositories.decisions.list()).find((d) =>
+    d.demand_id === demand.demand_id
+    && d.reason_code === DecisionReasonCode.PLAN_REVIEW
+    && d.status === DecisionStatus.OPEN
+  );
+  if (openPlanReview) {
+    logger.info({
+      demandId: demand.demand_id,
+      openDecisionId: openPlanReview.decision_id,
+      reason: (event.payload as { reason?: string })?.reason
+    }, "跳过重新规划：该 demand 已有 OPEN plan-review 决策，等待用户处理");
+    return {};
+  }
+
   const settings = await ctx.repositories.loadSettings();
   const planningRound = (await ctx.repositories.subgoals.list()).filter((item) => item.demand_id === demand.demand_id).length + 1;
   const reason = (event.payload as { reason: EventReason }).reason;
