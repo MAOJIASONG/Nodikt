@@ -208,8 +208,13 @@ export class PlannerService {
       "",
       "## You have THREE possible decisions",
       "",
-      '1. "NEEDS_CLARIFICATION" — Ask the user. Use this ONLY when the gap is something only the user knows:',
-      "   their goals, preferences, business choices, brand-new artifacts they want, decisions you cannot make for them.",
+      '1. "NEEDS_CLARIFICATION" — Ask the user. Use this whenever a DECISION the user should own is still open:',
+      "   their goals, success criteria / what \"done\" looks like, scope boundaries, priorities and trade-offs,",
+      "   a technical or design choice that has several reasonable answers, business choices, brand-new artifacts",
+      "   they want, decisions you cannot make for them.",
+      "   If reaching READY would mean guessing a default that silently commits the user to a direction they",
+      "   never chose — ask instead. Your job here is to draw the important details OUT of the user before planning,",
+      "   not to fill the gaps yourself.",
       "",
       '2. "NEEDS_RECON" — Dispatch a read-only worker to investigate. Use this when the gap is',
       "   FACTUAL information that a worker can observe directly without bothering the user.",
@@ -220,6 +225,8 @@ export class PlannerService {
       "",
       "   DO NOT ask the user for facts that a worker can simply look up. Asking the user for things",
       "   the system can observe itself is the wrong choice.",
+      "   But recon is for FACTS only — never use it to settle a decision the user should make.",
+      "   Finding WHERE the auth module lives is recon; deciding WHAT the new feature should actually do is clarification.",
       "",
       "   Examples that should be NEEDS_RECON:",
       "     * \"Refactor this repo\" without specifying which files — recon the repo structure.",
@@ -242,8 +249,10 @@ export class PlannerService {
       "        (arrays — may be empty `[]` but must be present)",
       "",
       "## Rules of thumb",
-      "- If a fact COULD be inspected (path exists, file content readable, online doc) but the user has not been asked yet, prefer NEEDS_RECON over NEEDS_CLARIFICATION.",
-      "- Only fall back to NEEDS_CLARIFICATION when the user has not specified a path/target at all, or when the question is genuinely a preference.",
+      "- Separate the two kinds of gaps. A FACTUAL gap (where a file lives, repo structure, an external doc's current state) → NEEDS_RECON. A DECISION gap (goal, scope, acceptance criteria, choosing between reasonable approaches — anything the user should own) → NEEDS_CLARIFICATION.",
+      "- Bias toward NEEDS_CLARIFICATION for decision gaps. Do NOT reach READY by filling a decision gap with a plausible default — if the user hasn't told you and you'd be guessing what they want, ask.",
+      "- Reserve READY for when the decisions are genuinely settled: the user stated them, or there is only one reasonable interpretation. If you catch yourself inventing acceptance criteria or picking an approach the user never mentioned, that's NEEDS_CLARIFICATION, not READY.",
+      "- Facts the user didn't give but a worker can observe are still NEEDS_RECON — don't bother the user for those.",
       "- Never combine NEEDS_CLARIFICATION and NEEDS_RECON in the same response — choose the most informative single next step.",
       "",
       "## Workspace override — IMPORTANT",
@@ -261,7 +270,7 @@ export class PlannerService {
       JSON.stringify({
         status: "NEEDS_CLARIFICATION | NEEDS_RECON | READY",
         display_title: "short product-style title, ideally 3-8 words",
-        clarification_question: "string — set when status is NEEDS_CLARIFICATION",
+        clarification_question: "string — set when status is NEEDS_CLARIFICATION. Guide the user: don't ask a vague 'please add more detail'. Briefly restate what you DID understand, then lay out the specific open decisions as a short list (e.g. '1) scope: A or B? 2) what does done look like? 3) any constraints?'). Make it easy to answer — offer concrete options where reasonable. Ask only what's needed to plan well; don't interrogate.",
         recon_subgoals: [
           {
             title: "Brief title for what to inspect",
@@ -617,39 +626,72 @@ export class PlannerService {
     }
 
     const timestamp = nowIso();
-    const frontierSubgoals = Array.isArray(result.frontier_subgoals) ? result.frontier_subgoals : [];
-    const subgoals: SubgoalContract[] = frontierSubgoals.slice(0, 3).map((item, index) => {
-      const kind: "build" | "recon" = item.kind === "recon" ? "recon" : "build";
-      const deliverables = kind === "recon"
-        ? (normalizeDeliverables(item.deliverables).includes("structured_output_json")
-            ? normalizeDeliverables(item.deliverables)
-            : ["structured_output_json" as const])
-        : normalizeDeliverables(item.deliverables);
-      return {
-        subgoal_id: createId("subgoal"),
-        demand_id: demand.demand_id,
-        title: item.title.trim(),
-        objective: item.objective.trim(),
-        success_criteria: normalizeStringArray(item.success_criteria),
-        failure_criteria: normalizeStringArray(item.failure_criteria),
-        constraints: normalizeStringArray(item.constraints),
-        budget: {
-          max_steps: kind === "recon" ? 12 : 20,
-          max_minutes: kind === "recon" ? 5 : 15
-        },
-        deliverables,
-        dependencies: [],
-        priority: index + 1,
-        state: SubgoalState.PLANNED,
-        planning_round: planningRound,
-        kind,
-        created_at: timestamp,
-        updated_at: timestamp
-      };
-    });
 
+    // 把 LLM 返回的 frontier_subgoals 规整成 SubgoalContract[]。
+    // 防御：弱模型（如 deepseek-v4-flash）可能漏 title/objective 或返回非数组 —— 缺 title 的项直接丢弃，
+    // 缺 objective 的回落到 title，避免 undefined.trim() 抛错或建出无意义 subgoal。
+    const buildSubgoals = (raw: FrontierPlanResult["frontier_subgoals"]): SubgoalContract[] => {
+      const list = Array.isArray(raw) ? raw : [];
+      return list
+        .slice(0, 3)
+        .map((item, index) => {
+          const title = typeof item?.title === "string" ? item.title.trim() : "";
+          if (!title) {
+            return null; // 无标题的 subgoal 无法执行，丢弃。
+          }
+          const objective = typeof item?.objective === "string" && item.objective.trim()
+            ? item.objective.trim()
+            : title;
+          const kind: "build" | "recon" = item.kind === "recon" ? "recon" : "build";
+          const deliverables = kind === "recon"
+            ? (normalizeDeliverables(item.deliverables).includes("structured_output_json")
+                ? normalizeDeliverables(item.deliverables)
+                : ["structured_output_json" as const])
+            : normalizeDeliverables(item.deliverables);
+          return {
+            subgoal_id: createId("subgoal"),
+            demand_id: demand.demand_id,
+            title,
+            objective,
+            success_criteria: normalizeStringArray(item.success_criteria),
+            failure_criteria: normalizeStringArray(item.failure_criteria),
+            constraints: normalizeStringArray(item.constraints),
+            budget: {
+              max_steps: kind === "recon" ? 12 : 20,
+              max_minutes: kind === "recon" ? 5 : 15
+            },
+            deliverables,
+            dependencies: [],
+            priority: index + 1,
+            state: SubgoalState.PLANNED,
+            planning_round: planningRound,
+            kind,
+            created_at: timestamp,
+            updated_at: timestamp
+          } as SubgoalContract;
+        })
+        .filter((sg): sg is SubgoalContract => sg !== null);
+    };
+
+    let subgoals = buildSubgoals(result.frontier_subgoals);
+
+    // 空 frontier 不是硬错误：弱模型在长上下文下偶发返回空 frontier_subgoals（即使整体 plan 合法）。
+    // 旧实现 throw "no frontier subgoals" → handler 标红 → ops 每轮自愈重试 → 又空 → 死循环。
+    // 改为回落到保守 fallback plan（至少 1 个可执行 subgoal），让任务能继续推进；同时记一条 brain_error
+    // 提示模型质量问题（capturedLlmError），但不阻断。
     if (subgoals.length === 0) {
-      throw new Error("Planner returned no frontier subgoals");
+      logger.warn({ demandId: demand.demand_id, planningRound }, "Planner 返回空 frontier_subgoals，回落到保守 fallback plan");
+      result = this.createFallbackFrontierPlan(demand);
+      subgoals = buildSubgoals(result.frontier_subgoals);
+      capturedLlmError = capturedLlmError ?? {
+        message: "Planner returned no frontier subgoals; used conservative fallback plan",
+        error_name: "EmptyFrontierFallback"
+      };
+    }
+
+    // fallback 自身恒非空；真要再为空说明代码契约被破坏，此时才是真异常。
+    if (subgoals.length === 0) {
+      throw new Error("Planner returned no frontier subgoals (fallback also empty)");
     }
 
     const overallPlanOutline = (Array.isArray(result.overall_plan_outline) ? result.overall_plan_outline : [])

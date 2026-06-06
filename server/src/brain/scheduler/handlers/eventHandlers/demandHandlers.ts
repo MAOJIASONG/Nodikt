@@ -853,7 +853,6 @@ export async function onDemandPaused(event: SchedulerEvent, ctx: HandlerContext)
       options: [
         DecisionAction.APPROVE,
         DecisionAction.PROVIDE_INFO,
-        DecisionAction.REJECT,
         DecisionAction.CANCEL_DEMAND
       ],
       metadata: {

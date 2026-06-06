@@ -204,22 +204,32 @@ export class LlmClient {
     maxTokens = 4000,
     timeoutMs?: number
   ): Promise<string> {
-    const response = await this.postJson(
-      `${config.base_url.replace(/\/$/, "")}/messages`,
-      {
-        "x-api-key": config.api_key,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json"
-      },
-      {
-        model: config.model,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-        temperature,
-        max_tokens: maxTokens
-      },
-      timeoutMs
-    );
+    const url = `${config.base_url.replace(/\/$/, "")}/messages`;
+    const headers = {
+      "x-api-key": config.api_key,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json"
+    };
+    const baseBody: Record<string, unknown> = {
+      model: config.model,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      max_tokens: maxTokens
+    };
+
+    let response: any;
+    try {
+      response = await this.postJson(url, headers, { ...baseBody, temperature }, timeoutMs);
+    } catch (error) {
+      const message = String((error as Error).message ?? "");
+      // 新一代 Claude（如 claude-opus-4-8）已弃用 temperature，上游会回
+      // 400 "`temperature` is deprecated for this model."。这类"参数不被支持"
+      // 的错误去掉 temperature 重试，与 callOpenAiCompatible / callOpenAiResponses 的降级策略一致。
+      if (!/temperature|deprecated|unsupported/i.test(message)) {
+        throw error;
+      }
+      response = await this.postJson(url, headers, baseBody, timeoutMs);
+    }
 
     const parts = Array.isArray(response?.content)
       ? response.content

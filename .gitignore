@@ -37,6 +37,8 @@ server/data/sessions.json
 server/data/*.bak*
 server/data/*.backup
 server/data/*.tmp
+server/data/settingsdeepseekv4flash.json
+server/data/settingsclaude48.json
 
 # Worker 运行时 HOME（含 CLI session 和 auth 状态）
 .opencode-runtime/

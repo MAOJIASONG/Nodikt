@@ -1,3 +1,5 @@
+import fs from "fs";
+import os from "os";
 import path from "path";
 
 import { ExecutionState, nowIso, WorkerRegistration, WorkerRegistryStatus } from "./domain/index.js";
@@ -90,6 +92,79 @@ function buildClaudeCodeEnv(): Record<string, string> {
     env.CLAUDE_CODE_DISALLOWED_TOOLS = CLAUDE_CODE_DISALLOWED_TOOLS;
   }
   return env;
+}
+
+/**
+ * 函数作用：把宿主机用户的 Claude Code 认证同步到 worker 子进程的隔离 HOME。
+ *
+ * 背景：worker 通过 spawn `claude` CLI 干活，且被赋予隔离 HOME（CLAUDE_CODE_RUNTIME_HOME，
+ * 默认 <server>/.claude-code-runtime）。CLI 的认证靠 $HOME/.claude/settings.json 里的
+ * `env` 块（ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN 等）。隔离 HOME 里没有这个块时，
+ * 子进程视角=未登录，CLI 直接输出 "Not logged in · Please run /login"，任务被判 UNVERIFIABLE。
+ *
+ * 做法：启动时读宿主机 ~/.claude/settings.json 的 `env` 块，写进隔离 HOME 的
+ * .claude/settings.json（只同步 env 认证块，不带 enabledPlugins / theme 等）。宿主机换了 token，
+ * 下次启动自动跟上，零维护。
+ *
+ * 注意事项：
+ * - 纯尽力而为：任何一步出错（文件缺失 / 解析失败 / 无写权限）都只 warn，不阻断启动。
+ * - 不覆盖隔离 HOME settings.json 里已有的非 env 字段（做浅合并，只替换 env）。
+ * - 若 CLAUDE_CODE_RUNTIME_HOME 指向宿主机自己的 HOME（用户选择复用登录态），则跳过——无需自拷。
+ */
+function syncClaudeCodeAuthToRuntimeHome(): void {
+  try {
+    const hostHome = os.homedir();
+    if (path.resolve(CLAUDE_CODE_RUNTIME_HOME) === path.resolve(hostHome)) {
+      return; // 隔离 HOME 就是宿主 HOME，直接复用现有凭证，无需同步。
+    }
+
+    const hostSettingsPath = path.join(hostHome, ".claude", "settings.json");
+    if (!fs.existsSync(hostSettingsPath)) {
+      console.warn(
+        `[claude-auth-sync] 宿主机 ${hostSettingsPath} 不存在，跳过认证同步；worker 可能报 "Not logged in"。`
+      );
+      return;
+    }
+
+    const hostSettings = JSON.parse(fs.readFileSync(hostSettingsPath, "utf8")) as { env?: Record<string, unknown> };
+    const hostEnv = hostSettings.env;
+    if (!hostEnv || typeof hostEnv !== "object") {
+      console.warn(
+        `[claude-auth-sync] 宿主机 settings.json 没有 env 块（认证靠的是登录态文件而非 token？）；跳过同步。`
+      );
+      return;
+    }
+
+    const hasAuth = Object.keys(hostEnv).some((k) => /^ANTHROPIC_(API_KEY|AUTH_TOKEN)$/.test(k));
+    if (!hasAuth) {
+      console.warn(
+        `[claude-auth-sync] 宿主机 settings.json 的 env 里没有 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN；同步可能仍无法登录。`
+      );
+    }
+
+    const runtimeClaudeDir = path.join(CLAUDE_CODE_RUNTIME_HOME, ".claude");
+    fs.mkdirSync(runtimeClaudeDir, { recursive: true });
+    const runtimeSettingsPath = path.join(runtimeClaudeDir, "settings.json");
+
+    let runtimeSettings: Record<string, unknown> = {};
+    if (fs.existsSync(runtimeSettingsPath)) {
+      try {
+        runtimeSettings = JSON.parse(fs.readFileSync(runtimeSettingsPath, "utf8")) as Record<string, unknown>;
+      } catch {
+        runtimeSettings = {}; // 隔离 HOME 里的 settings.json 损坏：重建，只保 env。
+      }
+    }
+
+    // 浅合并：只替换 env 认证块，保留隔离 HOME 已有的其它字段。
+    runtimeSettings.env = { ...(runtimeSettings.env as Record<string, unknown> ?? {}), ...hostEnv };
+    fs.writeFileSync(runtimeSettingsPath, JSON.stringify(runtimeSettings, null, 2), { mode: 0o600 });
+
+    console.log(
+      `[claude-auth-sync] 已把宿主机 Claude Code env 认证同步到 ${runtimeSettingsPath}（worker 子进程可登录）。`
+    );
+  } catch (error) {
+    console.warn(`[claude-auth-sync] 认证同步失败（不阻断启动）：${(error as Error).message}`);
+  }
 }
 
 function buildDefaultOpencodeWorker(timestamp: string): WorkerRegistration {
@@ -295,6 +370,7 @@ async function ensureDefaultWorkers(appContext: AppContext): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  syncClaudeCodeAuthToRuntimeHome();
   const appContext = await createApp();
   await ensureDefaultWorkers(appContext);
   const timer = appContext.opsMonitor.start(appContext.eventBus);

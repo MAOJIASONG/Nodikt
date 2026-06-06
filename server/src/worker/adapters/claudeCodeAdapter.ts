@@ -128,6 +128,26 @@ function summarize(value: unknown, maxLength = 240): string {
 }
 
 /**
+ * 函数作用：给"成功结果文本"做保留换行的大上限截断。
+ *
+ * 与 summarize() 的区别：summarize 把所有空白（含换行）折叠成单空格，用于喂给模型读的紧凑摘要；
+ * 本函数面向人类阅读的最终产出，必须保留换行——否则 markdown 表格 / 列表 / 代码块会被压成一行，
+ * 前端无法渲染。只裁掉行尾空白和连续 3+ 空行，并在超过 maxLength 时尾部省略。
+ *
+ * 参数说明：
+ * - text：worker 的最终结果文本（可能含 markdown）。
+ * - maxLength：字符上限，超过则截断并加省略号。
+ */
+function clampOutcomeText(text: string, maxLength: number): string {
+  const normalized = text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+$/gm, "")      // 去行尾空白
+    .replace(/\n{3,}/g, "\n\n")    // 连续空行压到最多一个
+    .trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+/**
  * 函数作用：把 stream-json 解析出的工具轨迹组装成给 verifier / 决策模型阅读的紧凑历史。
  *
  * 参数说明：
@@ -626,7 +646,10 @@ export class ClaudeCodeAdapter extends BaseLocalCommandAdapter {
       workerStatus = WorkerResultStatus.DONE;
       blockerReason = null;
       if (state.resultText) {
-        claimedOutcome = summarize(state.resultText, 280);
+        // 成功结果是给人看的最终产出（常含 markdown：表格 / 列表 / 代码块），
+        // 不能像 summarize() 那样把换行折叠成空格——那会毁掉 markdown 结构、UI 也读不了。
+        // 这里保留换行，只做大上限截断（8000），既能完整展示又不至于把超长调试输出塞爆 UI / 存储。
+        claimedOutcome = clampOutcomeText(state.resultText, 8000);
       }
     }
 

@@ -1,6 +1,8 @@
 import type { CSSProperties } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { apiRequest } from "./api/client";
 import { createNodiktSocket } from "./api/socket";
@@ -318,6 +320,23 @@ function RunningProgress({ execution }: { execution: Execution | null }) {
           {t("progress.in_progress", { action: lastAction })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * 渲染 markdown 文本（worker 结果常含表格 / 列表 / 代码块 / 任务清单）。
+ * 用 react-markdown + remark-gfm（GFM 表格、任务列表、删除线等）。
+ * 外层 .markdown-body 提供排版样式（见 styles.css）。空内容时返回 null，由调用方决定占位文案。
+ */
+function MarkdownText({ children, className }: { children?: string | null; className?: string }) {
+  const text = (children ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  return (
+    <div className={`markdown-body${className ? ` ${className}` : ""}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
 }
@@ -883,7 +902,6 @@ export function App() {
       const planReviewLabels: Record<string, string> = {
         Approve: t("decision_action.approve_plan"),
         ProvideInfo: t("decision_action.send_feedback"),
-        Reject: t("decision_action.reject_plan"),
         CancelDemand: t("decision_action.cancel_demand")
       };
       if (planReviewLabels[action]) {
@@ -1339,9 +1357,11 @@ export function App() {
     // 决策卡只暴露 Approve / Reject / ProvideInfo(Reply) 三个动作。
     // Pause/Stop/CancelDemand 等控制动作不在决策卡里 —— 它们属于 demand 级控制（hero 区按钮）。
     // 用正向白名单而非黑名单，确保未来后端即使在 options 里塞了别的动作，卡片也保持干净。
+    // 顺序由白名单固定（Approve 左 → Reject → ProvideInfo/Reply 右），不跟随后端 options 的下发顺序，
+    // 这样按钮位置稳定可预期（plan-review 卡即为 Approve 左、Reply 右）。
     const DECISION_CARD_ACTIONS = ["Approve", "Reject", "ProvideInfo"];
-    const actions = ((decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[])
-      .filter((action) => DECISION_CARD_ACTIONS.includes(action));
+    const offered = new Set((decision.options?.length ? decision.options : ["ProvideInfo"]) as DecisionAction[]);
+    const actions = DECISION_CARD_ACTIONS.filter((action) => offered.has(action as DecisionAction)) as DecisionAction[];
     return actions.map((action) => {
       const needsNote = decisionActionNeedsNote(action);
       const disabled = decisionSubmitting === decision.decision_id || (needsNote && !decisionNoteFor(decision.decision_id).trim());
@@ -2777,7 +2797,13 @@ export function App() {
                           </div>
                           <div className="subgoal-result-block">
                             <span className="subgoal-result-label">{t("subgoal_detail.result")}</span>
-                            <pre className="decision-modal-prompt">{selectedDialogExecution?.claimed_outcome || selectedDialogExecution?.compressed_history || t("subgoal_detail.no_result")}</pre>
+                            {selectedDialogExecution?.claimed_outcome || selectedDialogExecution?.compressed_history ? (
+                              <MarkdownText className="decision-modal-prompt">
+                                {selectedDialogExecution?.claimed_outcome || selectedDialogExecution?.compressed_history}
+                              </MarkdownText>
+                            ) : (
+                              <pre className="decision-modal-prompt">{t("subgoal_detail.no_result")}</pre>
+                            )}
                           </div>
                           <div className="subgoal-result-block">
                             <span className="subgoal-result-label">{t("subgoal_detail.artifacts")}</span>
@@ -2809,13 +2835,13 @@ export function App() {
                             <span className="subgoal-result-label">
                               {selectedSubgoalDialog.mode === "failed" ? t("subgoal_detail.failure_detail") : t("subgoal_detail.decision_detail")}
                             </span>
-                            <pre className="decision-modal-prompt">
+                            <MarkdownText className="decision-modal-prompt">
                               {selectedDialogWorkerResult?.blocker_reason?.message
                                 || rawSubgoalIssueText(selectedDialogExecution, selectedDialogWorkerResult, selectedDialogDecision)
                                 || selectedDialogExecution?.claimed_outcome
                                 || selectedDialogExecution?.compressed_history
                                 || t("subgoal_detail.no_detail")}
-                            </pre>
+                            </MarkdownText>
                           </div>
                           <div className="subgoal-result-block">
                             <span className="subgoal-result-label">{t("subgoal_detail.reason")}</span>

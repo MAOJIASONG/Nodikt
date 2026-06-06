@@ -305,7 +305,7 @@ export function buildPlanReviewPrompt(payload: PlanGeneratedPayload, demandTitle
     "请选择：",
     "  • Approve：按此方案开始执行",
     "  • Provide Info：用文字告诉 planner 需要怎么调整，系统会根据你的反馈重新规划",
-    "  • Reject / Cancel Demand：放弃当前方案"
+    "  • Cancel Demand：若整体方向不对，直接删除该任务即可"
   ].filter(Boolean).join("\n");
 }
 
@@ -380,7 +380,6 @@ export async function onPlanGenerated(event: SchedulerEvent, ctx: HandlerContext
     options: [
       DecisionAction.APPROVE,
       DecisionAction.PROVIDE_INFO,
-      DecisionAction.REJECT,
       DecisionAction.CANCEL_DEMAND
     ],
     metadata: {
